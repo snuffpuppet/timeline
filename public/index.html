@@ -51,6 +51,7 @@
             <button class="zoom-btn" data-zoom="month">Month</button>
           </div>
           <button id="teams-btn">Teams...</button>
+          <button id="deliverables-btn">Deliverables...</button>
           <span id="save-indicator">Saved</span>
           <button id="save-btn">Save</button>
           <button id="print-btn">Print PDF</button>
@@ -64,7 +65,8 @@
             <thead>
               <tr>
                 <th class="col-num">#</th>
-                <th class="col-name">Task Name</th>
+                <th class="col-name">Activity</th>
+                <th class="col-type">Type</th>
                 <th class="col-dur">Duration<br><small>(days)</small></th>
                 <th class="col-deps">Dependencies<br><small>(row #s)</small></th>
                 <th class="col-teams">Teams</th>
@@ -118,6 +120,19 @@
 
     </div><!-- /main -->
   </div><!-- /app -->
+
+  <!-- Deliverables management modal -->
+  <div id="deliverables-overlay" class="modal-overlay hidden">
+    <div id="deliverables-modal-box">
+      <div id="deliverables-modal-header">
+        <h3>Deliverables</h3>
+        <button id="deliverables-modal-close" class="icon-btn">×</button>
+      </div>
+      <p class="teams-hint">Define deliverables. Each groups a set of tasks and their activities.</p>
+      <div id="deliverables-list"></div>
+      <button id="add-deliverable-btn">+ Add Deliverable</button>
+    </div>
+  </div>
 
   <!-- Teams management modal -->
   <div id="teams-overlay" class="modal-overlay hidden">

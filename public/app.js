@@ -16,6 +16,18 @@ const ROW_H = 40;
 const BAR_H = 24;
 const BAR_TOP = (ROW_H - BAR_H) / 2;
 
+const ACTIVITY_TYPES = [
+  { id: 'discovery',    label: 'Discovery',    color: '#0d9488' },
+  { id: 'design',       label: 'Design',       color: '#7c3aed' },
+  { id: 'build',        label: 'Build',        color: '#2563eb' },
+  { id: 'int-test',     label: 'Int. Test',    color: '#d97706' },
+  { id: 'uat',          label: 'UAT',          color: '#ea580c' },
+  { id: 'data-cleanse', label: 'Data Cleanse', color: '#059669' },
+  { id: 'migration',    label: 'Migration',    color: '#0891b2' },
+  { id: 'release',      label: 'Release',      color: '#dc2626' },
+  { id: 'milestone',    label: 'Milestone',    color: '#475569' },
+];
+
 const CARD_W = 210;
 const CARD_H = 74;
 const CANVAS_COL_GAP = 290;
@@ -36,7 +48,9 @@ let activePopoverTaskId = null;
 let dragDep = null; // { fromId, fromX, fromY } — active Gantt drag state
 
 let canvasState = { pan: { x: 60, y: 60 }, zoom: 1 };
+let collapsedDeliverables = new Set(); // deliverable IDs collapsed in Gantt view
 let canvasDepDrag = null;
+let _taskRowMap = {}; // taskId → 1-based index in p.tasks[], rebuilt by renderTable
 
 // ── Helpers ──────────────────────────────────────────────────
 function uid() {
@@ -64,6 +78,15 @@ function currentProject() {
 
 function colorForIndex(i) {
   return FALLBACK_COLORS[i % FALLBACK_COLORS.length];
+}
+
+function actTypeInfo(id) {
+  return ACTIVITY_TYPES.find(t => t.id === id) || null;
+}
+
+function actTypeOrder(id) {
+  const i = ACTIVITY_TYPES.findIndex(t => t.id === id);
+  return i === -1 ? 99 : i;
 }
 
 // ── Schedule Computation ─────────────────────────────────────
@@ -177,7 +200,7 @@ function updateSaveIndicator() {
 // ── Project Operations ───────────────────────────────────────
 function newProject() {
   const today = new Date().toISOString().slice(0, 10);
-  const p = { id: uid(), name: 'New Project', startDate: today, teams: [], tasks: [] };
+  const p = { id: uid(), name: 'New Project', startDate: today, teams: [], deliverables: [], taskGroups: [], tasks: [] };
   state.projects.push(p);
   state.currentId = p.id;
   state.teamFilter = null;
@@ -239,6 +262,144 @@ function updateTeam(teamId, field, value) {
   markDirty();
   // Re-render table teams cells and gantt
   renderAll();
+}
+
+// ── Deliverable Operations ────────────────────────────────────
+function addDeliverable() {
+  const p = currentProject(); if (!p) return;
+  if (!p.deliverables) p.deliverables = [];
+  const color = DEFAULT_TEAM_COLORS[p.deliverables.length % DEFAULT_TEAM_COLORS.length];
+  p.deliverables.push({ id: uid(), name: 'New Deliverable', color });
+  markDirty();
+  renderDeliverablesModal();
+  renderAll();
+}
+
+function deleteDeliverable(delivId) {
+  const p = currentProject(); if (!p) return;
+  const groupIds = new Set((p.taskGroups || []).filter(g => g.deliverableId === delivId).map(g => g.id));
+  p.deliverables = (p.deliverables || []).filter(d => d.id !== delivId);
+  p.taskGroups = (p.taskGroups || []).filter(g => g.deliverableId !== delivId);
+  p.tasks.forEach(t => {
+    if (t.deliverableId === delivId) { t.deliverableId = null; t.groupId = null; }
+  });
+  markDirty();
+  renderDeliverablesModal();
+  renderAll();
+}
+
+function updateDeliverable(delivId, field, value) {
+  const p = currentProject(); if (!p) return;
+  const d = (p.deliverables || []).find(d => d.id === delivId);
+  if (d) { d[field] = value; markDirty(); renderAll(); }
+}
+
+// ── TaskGroup (Task) Operations ───────────────────────────────
+function addTaskGroup(deliverableId, name) {
+  const p = currentProject(); if (!p) return;
+  if (!p.taskGroups) p.taskGroups = [];
+  const groupId = uid();
+  p.taskGroups.push({ id: groupId, name, deliverableId });
+
+  const buildDur = 10;
+  const designDur = Math.max(1, Math.round(buildDur * 0.2));
+  const defs = [
+    { type: 'design',       name: 'Design',       dur: designDur },
+    { type: 'build',        name: 'Build',        dur: buildDur  },
+    { type: 'int-test',     name: 'Int. Testing', dur: 5         },
+    { type: 'uat',          name: 'UAT',          dur: 3         },
+    { type: 'data-cleanse', name: 'Data Cleanse', dur: 2         },
+    { type: 'migration',    name: 'Migration',    dur: 2         },
+    { type: 'release',      name: 'Release',      dur: 1         },
+  ];
+  const ids = defs.map(() => uid());
+  defs.forEach((def, i) => {
+    p.tasks.push({
+      id: ids[i],
+      name: def.name,
+      deliverableId,
+      groupId,
+      activityType: def.type,
+      duration: def.dur,
+      dependencies: i === 0 ? [] : [ids[i - 1]],
+      teams: [],
+      assignee: '',
+      notes: '',
+      color: actTypeInfo(def.type)?.color || colorForIndex(p.tasks.length),
+    });
+  });
+  markDirty();
+  renderAll();
+}
+
+function deleteTaskGroup(groupId) {
+  const p = currentProject(); if (!p) return;
+  const group = (p.taskGroups || []).find(g => g.id === groupId);
+  const taskIds = new Set(p.tasks.filter(t => t.groupId === groupId).map(t => t.id));
+  p.taskGroups = (p.taskGroups || []).filter(g => g.id !== groupId);
+  p.tasks = p.tasks.filter(t => t.groupId !== groupId);
+  p.tasks.forEach(t => { t.dependencies = (t.dependencies || []).filter(id => !taskIds.has(id)); });
+  markDirty();
+  renderAll();
+}
+
+// ── Deliverables Modal ────────────────────────────────────────
+function openDeliverablesModal() {
+  document.getElementById('deliverables-overlay').classList.remove('hidden');
+  renderDeliverablesModal();
+}
+
+function closeDeliverablesModal() {
+  document.getElementById('deliverables-overlay').classList.add('hidden');
+}
+
+function renderDeliverablesModal() {
+  const p = currentProject();
+  const list = document.getElementById('deliverables-list');
+  list.innerHTML = '';
+  if (!p) return;
+
+  const deliverables = p.deliverables || [];
+  if (!deliverables.length) {
+    const empty = document.createElement('p');
+    empty.style.cssText = 'text-align:center;color:#aaa;font-size:13px;padding:20px';
+    empty.textContent = 'No deliverables yet. Add one below.';
+    list.appendChild(empty);
+    return;
+  }
+
+  deliverables.forEach(deliv => {
+    const row = document.createElement('div');
+    row.className = 'team-row';
+
+    const colorBtn = document.createElement('button');
+    colorBtn.className = 'team-color-btn';
+    colorBtn.style.background = deliv.color;
+    colorBtn.title = 'Change color';
+    colorBtn.addEventListener('click', () => {
+      const inp = document.createElement('input');
+      inp.type = 'color'; inp.value = deliv.color; inp.style.display = 'none';
+      document.body.appendChild(inp); inp.click();
+      inp.addEventListener('input', () => { colorBtn.style.background = inp.value; updateDeliverable(deliv.id, 'color', inp.value); });
+      inp.addEventListener('change', () => document.body.removeChild(inp));
+    });
+
+    const nameInp = document.createElement('input');
+    nameInp.type = 'text'; nameInp.className = 'team-name-input'; nameInp.value = deliv.name;
+    nameInp.addEventListener('change', () => updateDeliverable(deliv.id, 'name', nameInp.value));
+    nameInp.addEventListener('keydown', e => { if (e.key === 'Enter') nameInp.blur(); });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'team-del-btn'; delBtn.textContent = '×';
+    delBtn.title = 'Delete deliverable';
+    delBtn.addEventListener('click', () => showConfirm(
+      `Delete deliverable "${deliv.name}" and ungroup its tasks?`,
+      () => deleteDeliverable(deliv.id)
+    ));
+
+    row.appendChild(colorBtn); row.appendChild(nameInp); row.appendChild(delBtn);
+    list.appendChild(row);
+  });
 }
 
 // ── Teams Modal ──────────────────────────────────────────────
@@ -533,6 +694,7 @@ function renderToolbar() {
     nameEl.value = ''; startEl.value = '';
     nameEl.disabled = startEl.disabled = true;
     teamsBtn.disabled = true;
+    document.getElementById('deliverables-btn').disabled = true;
     return;
   }
   nameEl.disabled = startEl.disabled = teamsBtn.disabled = false;
@@ -541,6 +703,10 @@ function renderToolbar() {
 
   const teamCount = (p.teams || []).length;
   teamsBtn.textContent = teamCount ? `Teams (${teamCount})` : 'Teams...';
+  const delivBtn = document.getElementById('deliverables-btn');
+  const delivCount = (p.deliverables || []).length;
+  delivBtn.textContent = delivCount ? `Deliverables (${delivCount})` : 'Deliverables...';
+  delivBtn.disabled = false;
 }
 
 // ── Render: Table ─────────────────────────────────────────────
@@ -562,23 +728,54 @@ function renderTable() {
   }
 
   const startDate = p.startDate ? new Date(p.startDate) : new Date();
+  const deliverables = p.deliverables || [];
+  const taskGroups = p.taskGroups || [];
 
-  p.tasks.forEach((task, idx) => {
+  // Row numbers = position in p.tasks[] (stable, used for dep chips)
+  _taskRowMap = {};
+  p.tasks.forEach((t, i) => { _taskRowMap[t.id] = i + 1; });
+
+  function appendActivityRow(task, indented) {
     const s = schedule && schedule[task.id];
     const taskStart = s ? addDays(startDate, s.startDay) : null;
     const taskEnd   = s ? addDays(startDate, s.endDay)   : null;
+    const rowNum = _taskRowMap[task.id] || 0;
 
     const tr = document.createElement('tr');
     if (s && s.isCritical) tr.classList.add('critical-row');
     tr.dataset.id = task.id;
 
-    // Row number
     const numTd = document.createElement('td');
     numTd.className = 'num-cell';
-    numTd.textContent = idx + 1;
+    numTd.textContent = rowNum;
     tr.appendChild(numTd);
 
-    tr.appendChild(makeEditCell(task.id, 'name', task.name, 'text', task.color));
+    const nameTd = makeEditCell(task.id, 'name', task.name, 'text', task.color);
+    if (indented) nameTd.classList.add('activity-indent');
+    tr.appendChild(nameTd);
+
+    // Activity type select
+    const typeTd = document.createElement('td');
+    typeTd.className = 'type-cell';
+    const sel = document.createElement('select');
+    sel.className = 'type-select';
+    const emptyOpt = document.createElement('option');
+    emptyOpt.value = ''; emptyOpt.textContent = '—';
+    sel.appendChild(emptyOpt);
+    ACTIVITY_TYPES.forEach(at => {
+      const opt = document.createElement('option');
+      opt.value = at.id; opt.textContent = at.label;
+      if (task.activityType === at.id) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener('change', () => {
+      const info = actTypeInfo(sel.value);
+      updateTask(task.id, 'activityType', sel.value || null);
+      if (info) updateTask(task.id, 'color', info.color);
+    });
+    typeTd.appendChild(sel);
+    tr.appendChild(typeTd);
+
     tr.appendChild(makeNumCell(task.id, 'duration', task.duration));
     tr.appendChild(makeDepsCell(task, p));
     tr.appendChild(makeTeamsCell(task, p));
@@ -586,30 +783,116 @@ function renderTable() {
     tr.appendChild(makeEditCell(task.id, 'notes', task.notes || '', 'text'));
 
     const startTd = document.createElement('td');
-    startTd.className = 'date-cell';
-    startTd.dataset.for = task.id;
-    startTd.dataset.which = 'start';
+    startTd.className = 'date-cell'; startTd.dataset.for = task.id; startTd.dataset.which = 'start';
     startTd.textContent = taskStart ? fmt(taskStart) : '—';
     tr.appendChild(startTd);
 
     const endTd = document.createElement('td');
-    endTd.className = 'date-cell';
-    endTd.dataset.for = task.id;
-    endTd.dataset.which = 'end';
+    endTd.className = 'date-cell'; endTd.dataset.for = task.id; endTd.dataset.which = 'end';
     endTd.textContent = taskEnd ? fmt(taskEnd) : '—';
     tr.appendChild(endTd);
 
     const delTd = document.createElement('td');
     const delBtn = document.createElement('button');
-    delBtn.className = 'del-btn';
-    delBtn.textContent = '×';
-    delBtn.title = 'Delete task';
+    delBtn.className = 'del-btn'; delBtn.textContent = '×';
+    delBtn.title = 'Delete activity';
     delBtn.addEventListener('click', () => deleteTask(task.id));
     delTd.appendChild(delBtn);
     tr.appendChild(delTd);
 
     tbody.appendChild(tr);
+  }
+
+  // ── Deliverable sections ──
+  deliverables.forEach(deliv => {
+    const dGroups = taskGroups.filter(g => g.deliverableId === deliv.id);
+
+    // Deliverable header
+    const hTr = document.createElement('tr');
+    hTr.className = 'deliverable-header-row';
+    hTr.dataset.delivId = deliv.id;
+    const hTd = document.createElement('td'); hTd.colSpan = 11;
+    const hInner = document.createElement('div'); hInner.className = 'deliv-row-inner';
+    const dot = document.createElement('span'); dot.className = 'deliv-dot'; dot.style.background = deliv.color;
+    const dName = document.createElement('span'); dName.className = 'deliv-name'; dName.textContent = deliv.name;
+    const addBtn = document.createElement('button'); addBtn.className = 'add-task-btn'; addBtn.textContent = '+ Add Task';
+    addBtn.addEventListener('click', () => showAddTaskGroupInput(deliv.id));
+    hInner.appendChild(dot); hInner.appendChild(dName); hInner.appendChild(addBtn);
+    hTd.appendChild(hInner); hTr.appendChild(hTd); tbody.appendChild(hTr);
+
+    // Task groups
+    dGroups.forEach(group => {
+      const gTasks = p.tasks
+        .filter(t => t.groupId === group.id)
+        .sort((a, b) => actTypeOrder(a.activityType) - actTypeOrder(b.activityType));
+
+      const gTr = document.createElement('tr');
+      gTr.className = 'task-group-header-row'; gTr.dataset.groupId = group.id;
+      const gTd = document.createElement('td'); gTd.colSpan = 11;
+      const gInner = document.createElement('div'); gInner.className = 'group-row-inner';
+      const gName = document.createElement('span'); gName.className = 'group-row-name'; gName.textContent = group.name;
+      const gDel = document.createElement('button'); gDel.className = 'group-del-btn'; gDel.textContent = '×';
+      gDel.title = `Delete task "${group.name}"`;
+      gDel.addEventListener('click', () => showConfirm(`Delete task "${group.name}" and all its activities?`, () => deleteTaskGroup(group.id)));
+      gInner.appendChild(gName); gInner.appendChild(gDel);
+      gTd.appendChild(gInner); gTr.appendChild(gTd); tbody.appendChild(gTr);
+
+      gTasks.forEach(t => appendActivityRow(t, true));
+    });
+
+    // Ungrouped tasks within this deliverable
+    p.tasks.filter(t => t.deliverableId === deliv.id && !t.groupId).forEach(t => appendActivityRow(t, false));
+
+    // Spacer row for "+ Add Task" input insertion
+    const sTr = document.createElement('tr');
+    sTr.className = 'add-group-row'; sTr.dataset.delivId = deliv.id;
+    const sTd = document.createElement('td'); sTd.colSpan = 11;
+    sTr.appendChild(sTd); tbody.appendChild(sTr);
   });
+
+  // ── Ungrouped tasks (no deliverable) ──
+  const ungrouped = p.tasks.filter(t => !t.deliverableId);
+  if (ungrouped.length) {
+    if (deliverables.length) {
+      const uTr = document.createElement('tr'); uTr.className = 'deliverable-header-row ungrouped-header';
+      const uTd = document.createElement('td'); uTd.colSpan = 11;
+      const uInner = document.createElement('div'); uInner.className = 'deliv-row-inner';
+      uInner.textContent = 'Ungrouped Tasks';
+      uTd.appendChild(uInner); uTr.appendChild(uTd); tbody.appendChild(uTr);
+    }
+    ungrouped.forEach(t => appendActivityRow(t, false));
+  }
+}
+
+function showAddTaskGroupInput(delivId) {
+  const tbody = document.getElementById('task-tbody');
+  const old = tbody.querySelector('.new-group-input-row');
+  if (old) old.remove();
+
+  const anchor = tbody.querySelector(`.add-group-row[data-deliv-id="${delivId}"]`);
+
+  const tr = document.createElement('tr'); tr.className = 'new-group-input-row';
+  const td = document.createElement('td'); td.colSpan = 11;
+  const inner = document.createElement('div'); inner.className = 'new-group-inner';
+
+  const inp = document.createElement('input');
+  inp.type = 'text'; inp.className = 'new-group-input';
+  inp.placeholder = 'Task name (e.g. Core Service, CRM Integration)…';
+
+  const addBtn = document.createElement('button'); addBtn.className = 'btn-sm'; addBtn.textContent = 'Add';
+  const cancelBtn = document.createElement('button'); cancelBtn.className = 'btn-sm btn-ghost'; cancelBtn.textContent = 'Cancel';
+
+  const doAdd = () => { const name = inp.value.trim(); if (name) addTaskGroup(delivId, name); tr.remove(); };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); if (e.key === 'Escape') tr.remove(); });
+  addBtn.addEventListener('click', doAdd);
+  cancelBtn.addEventListener('click', () => tr.remove());
+
+  inner.appendChild(inp); inner.appendChild(addBtn); inner.appendChild(cancelBtn);
+  td.appendChild(inner); tr.appendChild(td);
+
+  if (anchor) tbody.insertBefore(tr, anchor);
+  else tbody.appendChild(tr);
+  inp.focus();
 }
 
 function makeEditCell(taskId, field, value, type, swatchColor) {
@@ -866,6 +1149,25 @@ function renderGantt() {
     return;
   }
 
+  const deliverables = p.deliverables || [];
+
+  // Build ordered row list: deliverable header rows interleaved with task rows
+  // taskIndexMap preserves original 1-based row numbers from p.tasks
+  const taskIndexMap = {};
+  p.tasks.forEach((t, i) => { taskIndexMap[t.id] = i + 1; });
+
+  const rows = [];
+  deliverables.forEach(deliv => {
+    const delivTasks = p.tasks.filter(t => t.deliverableId === deliv.id);
+    if (!delivTasks.length) return;
+    const collapsed = collapsedDeliverables.has(deliv.id);
+    rows.push({ type: 'deliv-header', deliv, delivTasks, collapsed });
+    if (!collapsed) {
+      delivTasks.forEach(task => rows.push({ type: 'task', task }));
+    }
+  });
+  p.tasks.filter(t => !t.deliverableId).forEach(task => rows.push({ type: 'task', task }));
+
   const startDate = p.startDate ? new Date(p.startDate) : new Date();
   startDate.setHours(0,0,0,0);
   const today = new Date(); today.setHours(0,0,0,0);
@@ -878,7 +1180,7 @@ function renderGantt() {
 
   const dayW = { day: 36, week: 18, month: 6 }[state.zoom] || 18;
   const totalW = maxDay * dayW;
-  const totalH = GANTT_HEADER_H + p.tasks.length * ROW_H;
+  const totalH = GANTT_HEADER_H + rows.length * ROW_H;
 
   svg.style.width = totalW + 'px';
   svg.style.height = totalH + 'px';
@@ -892,6 +1194,23 @@ function renderGantt() {
   marker.appendChild(makeSVGEl('path', { d: 'M 0 0 L 8 4 L 0 8 z', fill: '#888' }));
   defs.appendChild(marker);
   svg.appendChild(defs);
+
+  // Swim-lane bands: one rect per row
+  const swimG = makeSVGEl('g');
+  rows.forEach((row, i) => {
+    const rowY = GANTT_HEADER_H + i * ROW_H;
+    if (row.type === 'deliv-header') {
+      swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: ROW_H, fill: row.deliv.color + '22' }));
+      swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: 3, height: ROW_H, fill: row.deliv.color }));
+    } else if (row.task.deliverableId) {
+      const deliv = deliverables.find(d => d.id === row.task.deliverableId);
+      if (deliv) {
+        swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: ROW_H, fill: deliv.color + '0d' }));
+        swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: 3, height: ROW_H, fill: deliv.color }));
+      }
+    }
+  });
+  svg.appendChild(swimG);
 
   // Alternating week column backgrounds
   const bg = makeSVGEl('g');
@@ -909,7 +1228,7 @@ function renderGantt() {
   for (let day = 0; day <= maxDay; day += 7) {
     grid.appendChild(makeSVGEl('line', { x1: day * dayW, y1: GANTT_HEADER_H, x2: day * dayW, y2: totalH, stroke: '#e2e5ec', 'stroke-width': 1 }));
   }
-  for (let i = 0; i <= p.tasks.length; i++) {
+  for (let i = 0; i <= rows.length; i++) {
     grid.appendChild(makeSVGEl('line', { x1: 0, y1: GANTT_HEADER_H + i * ROW_H, x2: totalW, y2: GANTT_HEADER_H + i * ROW_H, stroke: '#e2e5ec', 'stroke-width': 1 }));
   }
   svg.appendChild(grid);
@@ -924,64 +1243,124 @@ function renderGantt() {
     svg.appendChild(todayLabel);
   }
 
-  // Bars
+  // Bars + label rows
   const barsG = makeSVGEl('g');
   const barPositions = {};
 
-  p.tasks.forEach((task, i) => {
-    const s = schedule[task.id];
-    if (!s) return;
+  rows.forEach((row, rowIdx) => {
+    const rowY = GANTT_HEADER_H + rowIdx * ROW_H;
 
-    const x = s.startDay * dayW;
-    const w = Math.max((s.endDay - s.startDay + 1) * dayW, 4);
-    const y = GANTT_HEADER_H + i * ROW_H + BAR_TOP;
-    barPositions[task.id] = { x, y: y + BAR_H / 2, w };
+    if (row.type === 'deliv-header') {
+      const { deliv, delivTasks, collapsed } = row;
 
-    const dimmed = isTaskDimmed(task);
-    const { fill, opacity } = getBarFill(task, defs);
+      // Summary bar spanning the full deliverable date range (shown when collapsed;
+      // shown faintly when expanded so you can see the overall envelope)
+      const scheduled = delivTasks.filter(t => schedule[t.id]);
+      if (scheduled.length) {
+        const minStart = Math.min(...scheduled.map(t => schedule[t.id].startDay));
+        const maxEnd   = Math.max(...scheduled.map(t => schedule[t.id].endDay));
+        const x = minStart * dayW;
+        const w = Math.max((maxEnd - minStart + 1) * dayW, 4);
+        const y = rowY + BAR_TOP;
+        const bar = makeSVGEl('rect', { x, y, width: w, height: BAR_H,
+          fill: deliv.color, rx: 4, ry: 4, opacity: collapsed ? 0.6 : 0.25 });
+        barsG.appendChild(bar);
+        if (collapsed && w > 50) {
+          const lbl = makeSVGEl('text', { x: x + 7, y: y + BAR_H / 2 + 4,
+            fill: '#fff', 'font-size': 11, 'font-weight': 600 });
+          lbl.textContent = truncate(deliv.name + ' (' + scheduled.length + ')', Math.floor(w / 7));
+          barsG.appendChild(lbl);
+        }
+      }
 
-    const bar = makeSVGEl('rect', {
-      x, y, width: w, height: BAR_H,
-      fill,
-      rx: 4, ry: 4,
-      opacity: dimmed ? 0.15 : (s.isCritical ? opacity : opacity * 0.85),
-    });
-    if (s.isCritical && !dimmed) bar.setAttribute('stroke', '#c05020');
-    barsG.appendChild(bar);
+      // Label panel header row
+      const headerRow = document.createElement('div');
+      headerRow.className = 'gantt-deliv-header-row';
+      headerRow.style.borderLeft = `3px solid ${deliv.color}`;
+      headerRow.style.background = deliv.color + '18';
 
-    if (w > 30 && !dimmed) {
-      const label = makeSVGEl('text', { x: x + 6, y: y + BAR_H / 2 + 4, fill: '#fff', 'font-size': 11, 'font-weight': 500 });
-      label.textContent = truncate(task.name, Math.floor(w / 7));
-      barsG.appendChild(label);
+      const toggle = document.createElement('span');
+      toggle.className = 'gantt-deliv-toggle';
+      toggle.textContent = collapsed ? '▶' : '▼';
+
+      const nameEl = document.createElement('span');
+      nameEl.className = 'gantt-deliv-header-name';
+      nameEl.textContent = deliv.name;
+
+      const countEl = document.createElement('span');
+      countEl.className = 'gantt-deliv-header-count';
+      countEl.textContent = delivTasks.length + (delivTasks.length === 1 ? ' task' : ' tasks');
+
+      headerRow.appendChild(toggle);
+      headerRow.appendChild(nameEl);
+      headerRow.appendChild(countEl);
+
+      headerRow.addEventListener('click', () => {
+        if (collapsedDeliverables.has(deliv.id)) collapsedDeliverables.delete(deliv.id);
+        else collapsedDeliverables.add(deliv.id);
+        renderGantt();
+      });
+
+      labelsBody.appendChild(headerRow);
+
+    } else {
+      // Task row
+      const { task } = row;
+      const s = schedule[task.id];
+      if (!s) return;
+
+      const x = s.startDay * dayW;
+      const w = Math.max((s.endDay - s.startDay + 1) * dayW, 4);
+      const y = rowY + BAR_TOP;
+      barPositions[task.id] = { x, y: y + BAR_H / 2, w };
+
+      const dimmed = isTaskDimmed(task);
+      const { fill, opacity } = getBarFill(task, defs);
+
+      const bar = makeSVGEl('rect', {
+        x, y, width: w, height: BAR_H,
+        fill,
+        rx: 4, ry: 4,
+        opacity: dimmed ? 0.15 : (s.isCritical ? opacity : opacity * 0.85),
+      });
+      if (s.isCritical && !dimmed) bar.setAttribute('stroke', '#c05020');
+      barsG.appendChild(bar);
+
+      if (w > 30 && !dimmed) {
+        const label = makeSVGEl('text', { x: x + 6, y: y + BAR_H / 2 + 4, fill: '#fff', 'font-size': 11, 'font-weight': 500 });
+        label.textContent = truncate(task.name, Math.floor(w / 7));
+        barsG.appendChild(label);
+      }
+
+      // Left label panel row
+      const labelRow = document.createElement('div');
+      labelRow.className = 'gantt-label-row' + (s.isCritical ? ' critical-label' : '');
+      if (dimmed) labelRow.style.opacity = '0.35';
+      if (task.deliverableId && task.groupId) labelRow.style.paddingLeft = '20px';
+
+      const numSpan = document.createElement('span');
+      numSpan.className = 'gantt-label-num';
+      numSpan.textContent = taskIndexMap[task.id];
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'gantt-label-name';
+      nameSpan.textContent = task.name;
+      nameSpan.title = task.name;
+
+      const durSpan = document.createElement('span');
+      durSpan.className = 'gantt-label-dur';
+      durSpan.textContent = task.duration + 'd';
+
+      labelRow.appendChild(numSpan);
+      labelRow.appendChild(nameSpan);
+      labelRow.appendChild(durSpan);
+      labelsBody.appendChild(labelRow);
     }
-
-    // Left label panel row
-    const labelRow = document.createElement('div');
-    labelRow.className = 'gantt-label-row' + (s.isCritical ? ' critical-label' : '');
-    if (dimmed) labelRow.style.opacity = '0.35';
-
-    const numSpan = document.createElement('span');
-    numSpan.className = 'gantt-label-num';
-    numSpan.textContent = i + 1;
-
-    const nameSpan = document.createElement('span');
-    nameSpan.className = 'gantt-label-name';
-    nameSpan.textContent = task.name;
-    nameSpan.title = task.name;
-
-    const durSpan = document.createElement('span');
-    durSpan.className = 'gantt-label-dur';
-    durSpan.textContent = task.duration + 'd';
-
-    labelRow.appendChild(numSpan);
-    labelRow.appendChild(nameSpan);
-    labelRow.appendChild(durSpan);
-    labelsBody.appendChild(labelRow);
   });
 
   svg.appendChild(barsG);
 
-  // Dependency arrows
+  // Dependency arrows (only between tasks with visible bar positions)
   const arrowsG = makeSVGEl('g');
   p.tasks.forEach(task => {
     const succ = barPositions[task.id];
@@ -1826,6 +2205,14 @@ function wireEvents() {
   });
   document.getElementById('add-team-btn').addEventListener('click', addTeam);
 
+  // Deliverables button
+  document.getElementById('deliverables-btn').addEventListener('click', openDeliverablesModal);
+  document.getElementById('deliverables-modal-close').addEventListener('click', closeDeliverablesModal);
+  document.getElementById('deliverables-overlay').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('deliverables-overlay')) closeDeliverablesModal();
+  });
+  document.getElementById('add-deliverable-btn').addEventListener('click', addDeliverable);
+
   // Close popovers on outside click
   document.addEventListener('click', (e) => {
     const teamPop = document.getElementById('team-popover');
@@ -1866,7 +2253,7 @@ function wireEvents() {
 
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveData(); }
-    if (e.key === 'Escape') { closeTeamPopover(); closeTeamsModal(); closeDepPopover(); }
+    if (e.key === 'Escape') { closeTeamPopover(); closeTeamsModal(); closeDepPopover(); closeDeliverablesModal(); }
   });
 
   document.getElementById('canvas-auto-layout-btn').addEventListener('click', () => {
