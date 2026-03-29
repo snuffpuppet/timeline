@@ -38,7 +38,7 @@ To rebuild after code changes:
 docker compose up -d --build
 ```
 
-Data is stored in `./data/gantt.json` on your host machine via a volume mount — it persists across container restarts and rebuilds.
+Data is stored in `./data/gantt.json` on your host machine via a volume mount — it persists across container restarts and rebuilds. This file is excluded from git; if it doesn't exist on first run an example project is created automatically.
 
 ## Running directly (Python, no Docker)
 
@@ -52,7 +52,9 @@ App is available at **http://localhost:3000**
 
 ## Data
 
-All project data is stored in `data/gantt.json`. Back this file up to preserve your work. The format is plain JSON and human-readable.
+All project data is stored in `data/gantt.json`. This file is excluded from git via `.gitignore`. Back it up to preserve your work. The format is plain JSON and human-readable.
+
+If `gantt.json` does not exist when the server starts, an example project is created automatically so the app is immediately usable.
 
 ## File structure
 
