@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Timeline — Gantt Planner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div id="sidebar-brand">
+        <span class="brand-mark">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="1" y="5" width="10" height="3" rx="1.5" fill="#5865f5"/><rect x="1" y="10" width="16" height="3" rx="1.5" fill="#5865f5" opacity=".45"/><rect x="7" y="0" width="10" height="3" rx="1.5" fill="#5865f5" opacity=".7"/></svg>
+        </span>
+        <span class="brand-name">Timeline</span>
+      </div>
+      <div id="sidebar-header">
+        <span>Projects</span>
+        <button id="new-project-btn" title="New project">+</button>
+      </div>
+      <ul id="project-list"></ul>
+    </aside>
+
+    <!-- Main content -->
+    <div id="main">
+
+      <!-- Toolbar -->
+      <div id="toolbar">
+        <div id="project-meta">
+          <input id="project-name" type="text" placeholder="Project name" spellcheck="false">
+          <label>Start:
+            <input id="project-start" type="date">
+          </label>
+        </div>
+        <div id="view-toggle">
+          <button class="view-btn active" data-view="table">Table</button>
+          <button class="view-btn" data-view="gantt">Gantt</button>
+          <button class="view-btn" data-view="canvas">Canvas</button>
+        </div>
+        <div id="toolbar-actions">
+          <div id="zoom-controls" class="hidden">
+            <label>Zoom:</label>
+            <button class="zoom-btn" data-zoom="day">Day</button>
+            <button class="zoom-btn active" data-zoom="week">Week</button>
+            <button class="zoom-btn" data-zoom="month">Month</button>
+          </div>
+          <button id="teams-btn">Teams...</button>
+          <span id="save-indicator">Saved</span>
+          <button id="save-btn">Save</button>
+          <button id="print-btn">Print PDF</button>
+        </div>
+      </div>
+
+      <!-- Table View -->
+      <div id="table-view" class="view active">
+        <div id="table-scroll">
+          <table id="task-table">
+            <thead>
+              <tr>
+                <th class="col-num">#</th>
+                <th class="col-name">Task Name</th>
+                <th class="col-dur">Duration<br><small>(days)</small></th>
+                <th class="col-deps">Dependencies<br><small>(row #s)</small></th>
+                <th class="col-teams">Teams</th>
+                <th class="col-assignee">Assignee</th>
+                <th class="col-notes">Notes</th>
+                <th class="col-date">Start</th>
+                <th class="col-date">End</th>
+                <th class="col-del"></th>
+              </tr>
+            </thead>
+            <tbody id="task-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="quick-add-area">
+          <div id="quick-add-bar">
+            <input id="quick-add-input" type="text"
+              placeholder='Quick add: "Design mockups, 5d, deps: 1 2, assign: Alice"  — press Enter'>
+            <button id="quick-add-btn">Add</button>
+          </div>
+          <div id="quick-add-help">
+            Format: <code>Task name, Nd, deps: 1 2 3, teams: Frontend QA, assign: Name, notes: text</code>
+            &nbsp;|&nbsp; Duration defaults to 1d &nbsp;|&nbsp; deps by row number &nbsp;|&nbsp; teams by name (partial match ok)
+          </div>
+        </div>
+
+        <div id="dep-error" class="hidden"></div>
+      </div>
+
+      <!-- Canvas View -->
+      <div id="canvas-view" class="view hidden">
+        <div id="canvas-inner-toolbar">
+          <button id="canvas-auto-layout-btn">Auto-layout</button>
+          <button id="canvas-fit-btn">Fit all</button>
+          <span class="canvas-hint">Drag card to move &nbsp;·&nbsp; Drag <strong>●</strong> to link &nbsp;·&nbsp; Scroll to zoom &nbsp;·&nbsp; Drag empty space to pan</span>
+        </div>
+      </div>
+
+      <!-- Gantt View -->
+      <div id="gantt-view" class="view hidden">
+        <div id="gantt-wrapper">
+          <div id="gantt-labels-panel">
+            <div id="gantt-labels-header">Task</div>
+            <div id="gantt-labels-body"></div>
+          </div>
+          <div id="gantt-chart-panel">
+            <svg id="gantt-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /main -->
+  </div><!-- /app -->
+
+  <!-- Teams management modal -->
+  <div id="teams-overlay" class="modal-overlay hidden">
+    <div id="teams-modal-box">
+      <div id="teams-modal-header">
+        <h3>Teams</h3>
+        <button id="teams-modal-close" class="icon-btn">×</button>
+      </div>
+      <p class="teams-hint">Define the teams involved in this project. Assign teams to tasks in the table.</p>
+      <div id="teams-list"></div>
+      <button id="add-team-btn">+ Add Team</button>
+    </div>
+  </div>
+
+  <!-- Team selector popover -->
+  <div id="team-popover" class="hidden">
+    <div id="team-popover-inner"></div>
+  </div>
+
+  <!-- Dependency picker popover -->
+  <div id="dep-popover" class="hidden">
+    <div id="dep-popover-inner"></div>
+  </div>
+
+  <!-- Delete project confirm modal -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div id="modal">
+      <p id="modal-msg"></p>
+      <div id="modal-btns">
+        <button id="modal-cancel">Cancel</button>
+        <button id="modal-confirm" class="danger">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

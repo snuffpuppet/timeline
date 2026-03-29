@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Read(//usr/local/bin/**)",
+      "Read(//Users/adam/.nvm/**)",
+      "Read(//opt/homebrew/bin/**)",
+      "Bash(command -v node)",
+      "Read(//usr/local/lib/**)",
+      "Bash(curl -s http://localhost:3000/)",
+      "Bash(open:*)",
+      "Bash(lsof -ti:3000)"
+    ]
+  }
+}
