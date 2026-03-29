@@ -6,7 +6,7 @@ import os
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
-PORT = 3000
+PORT = int(os.environ.get('PORT', 3000))
 BASE_DIR = Path(__file__).parent
 PUBLIC_DIR = BASE_DIR / 'public'
 DATA_DIR = BASE_DIR / 'data'
