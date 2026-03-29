@@ -9,10 +9,10 @@ from pathlib import Path
 PORT = int(os.environ.get('PORT', 3000))
 BASE_DIR = Path(__file__).parent
 PUBLIC_DIR = BASE_DIR / 'public'
-DATA_DIR = BASE_DIR / 'data'
+DATA_DIR = Path.home() / '.data' / 'timeline'
 DATA_FILE = DATA_DIR / 'gantt.json'
 
-DATA_DIR.mkdir(exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class GanttHandler(SimpleHTTPRequestHandler):
