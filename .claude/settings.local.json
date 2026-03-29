@@ -9,7 +9,9 @@
       "Read(//usr/local/lib/**)",
       "Bash(curl -s http://localhost:3000/)",
       "Bash(open:*)",
-      "Bash(lsof -ti:3000)"
+      "Bash(lsof -ti:3000)",
+      "Bash(docker compose:*)",
+      "Bash(colima status:*)"
     ]
   }
 }
