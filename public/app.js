@@ -2460,13 +2460,23 @@ function renderGantt() {
     labelsHeader.appendChild(hint);
   }
 
-  // Sync scroll (histogram scroll sync is attached by renderHistogram)
+  // Bi-directional scroll sync between chart panel and labels body
   const chartPanel = document.getElementById('gantt-chart-panel');
   const labelsBodyEl = document.getElementById('gantt-labels-body');
+  let _syncingScroll = false;
   chartPanel.onscroll = () => {
+    if (_syncingScroll) return;
+    _syncingScroll = true;
     labelsBodyEl.scrollTop = chartPanel.scrollTop;
     const histPanel = document.getElementById('histogram-chart-panel');
     if (histPanel) histPanel.scrollLeft = chartPanel.scrollLeft;
+    _syncingScroll = false;
+  };
+  labelsBodyEl.onscroll = () => {
+    if (_syncingScroll) return;
+    _syncingScroll = true;
+    chartPanel.scrollTop = labelsBodyEl.scrollTop;
+    _syncingScroll = false;
   };
 
   renderHistogram(p, schedule, dayW, maxDay);
