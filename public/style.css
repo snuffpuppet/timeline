@@ -1545,6 +1545,13 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   flex-shrink: 0;
 }
 .deliv-name { flex: 1; }
+.deliv-effort-label {
+  font-size: 11px;
+  color: var(--text-4);
+  font-family: 'DM Mono', monospace;
+  white-space: nowrap;
+  margin-right: 4px;
+}
 .add-task-btn {
   height: 22px;
   padding: 0 9px;
@@ -2119,9 +2126,97 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 }
 .template-select:focus { border-color: var(--accent); }
 
+/* ── Gantt Tooltip ──────────────────────────────────────────── */
+#gantt-tooltip {
+  position: fixed;
+  z-index: 9999;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.35);
+  opacity: 0;
+  transition: opacity .1s;
+  max-width: 220px;
+}
+#gantt-tooltip.visible { opacity: 1; }
+#gantt-tooltip strong { font-weight: 600; font-size: 12.5px; }
+#gantt-tooltip span { color: #a0aec0; }
+
+/* ── Resource Histogram ─────────────────────────────────────── */
+#resource-histogram {
+  display: flex;
+  flex-shrink: 0;
+  border-top: 2px solid var(--border);
+  background: var(--bg);
+  max-height: 220px;
+}
+
+#histogram-labels-panel {
+  width: var(--label-w);
+  min-width: var(--label-w);
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+#histogram-labels-header {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-4);
+  padding: 8px 12px 6px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+#histogram-labels-body {
+  overflow-y: hidden;
+  flex: 1;
+}
+
+.histogram-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 14px;
+  height: 76px;
+  white-space: nowrap;
+}
+
+.histogram-label-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.histogram-label-name {
+  font-size: 11.5px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#histogram-chart-panel {
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: hidden;
+}
+
 /* ── Print ──────────────────────────────────────────────────── */
 @media print {
-  #sidebar, #toolbar, #table-view, #quick-add-area, #dep-error { display: none !important; }
+  #sidebar, #toolbar, #table-view, #quick-add-area, #dep-error, #resource-histogram, #gantt-tooltip { display: none !important; }
   body, #app, #main { height: auto; overflow: visible; }
   #gantt-view { display: flex !important; height: auto; overflow: visible; }
   #gantt-wrapper { overflow: visible; height: auto; }

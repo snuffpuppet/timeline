@@ -187,6 +187,19 @@ function computeSchedule(project) {
 }
 
 // ── Data Load / Save ─────────────────────────────────────────
+function upgradeData() {
+  let changed = false;
+  state.projects.forEach(p => {
+    (p.activities || []).forEach(a => {
+      if (a.fte == null) { a.fte = 1; changed = true; }
+    });
+    (p.tasks || []).forEach(t => {
+      if (t.effort == null) { t.effort = t.duration || 1; changed = true; }
+    });
+  });
+  if (changed) markDirty();
+}
+
 async function loadData() {
   let data = {};
   try {
@@ -199,6 +212,7 @@ async function loadData() {
     state.templates = [];
   }
   if (data.templates === undefined) { seedDefaultTemplates(); markDirty(); }
+  upgradeData();
   if (state.projects.length) state.currentId = state.projects[0].id;
   renderAll();
 }
@@ -970,9 +984,14 @@ function renderTable() {
     if (indented) hInner.style.paddingLeft = '28px';
     const dot = document.createElement('span'); dot.className = 'deliv-dot'; dot.style.background = deliv.color;
     const dName = document.createElement('span'); dName.className = 'deliv-name'; dName.textContent = deliv.name;
+    const delivTotalEffort = p.tasks.filter(t => t.deliverableId === deliv.id)
+      .reduce((sum, t) => sum + (t.effort ?? t.duration ?? 1), 0);
+    const dEffort = document.createElement('span'); dEffort.className = 'deliv-effort-label';
+    dEffort.textContent = delivTotalEffort + ' pd';
+    dEffort.title = delivTotalEffort + ' person-days total effort';
     const addBtn = document.createElement('button'); addBtn.className = 'add-task-btn'; addBtn.textContent = '+ Add Activity';
     addBtn.addEventListener('click', () => showAddActivityInput(deliv.id));
-    hInner.appendChild(dot); hInner.appendChild(dName); hInner.appendChild(addBtn);
+    hInner.appendChild(dot); hInner.appendChild(dName); hInner.appendChild(dEffort); hInner.appendChild(addBtn);
     hTd.appendChild(hInner); hTr.appendChild(hTd); tbody.appendChild(hTr);
 
     // Activities
@@ -1346,6 +1365,31 @@ function isTaskDimmed(task) {
   return !(task.teams || []).includes(state.teamFilter);
 }
 
+// ── Gantt Tooltip ────────────────────────────────────────────
+function getGanttTooltip() {
+  let el = document.getElementById('gantt-tooltip');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'gantt-tooltip';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function showGanttTooltip(e, lines) {
+  const tt = getGanttTooltip();
+  tt.innerHTML = lines.map((l, i) => i === 0 ? `<strong>${l}</strong>` : `<span>${l}</span>`).join('');
+  tt.classList.add('visible');
+  moveGanttTooltip(e);
+}
+function moveGanttTooltip(e) {
+  const tt = getGanttTooltip();
+  tt.style.left = (e.clientX + 14) + 'px';
+  tt.style.top  = (e.clientY - 8) + 'px';
+}
+function hideGanttTooltip() {
+  getGanttTooltip().classList.remove('visible');
+}
+
 function renderGantt() {
   const p = currentProject();
   const labelsBody = document.getElementById('gantt-labels-body');
@@ -1366,6 +1410,7 @@ function renderGantt() {
     const msg = makeSVGEl('text', { x: 200, y: 100, 'text-anchor': 'middle', fill: '#aaa', 'font-size': 14 });
     msg.textContent = 'Add tasks to see the Gantt chart';
     svg.appendChild(msg);
+    document.getElementById('resource-histogram').classList.add('hidden');
     return;
   }
 
@@ -1375,6 +1420,7 @@ function renderGantt() {
     const msg = makeSVGEl('text', { x: 200, y: 40, 'text-anchor': 'middle', fill: '#d94f4f', 'font-size': 14 });
     msg.textContent = 'Circular dependency — fix before viewing Gantt.';
     svg.appendChild(msg);
+    document.getElementById('resource-histogram').classList.add('hidden');
     return;
   }
 
@@ -1711,6 +1757,20 @@ function renderGantt() {
         opacity: dimmed ? 0.15 : (s.isCritical ? opacity : opacity * 0.85),
       });
       if (s.isCritical && !dimmed) bar.setAttribute('stroke', '#c05020');
+      // Tooltip
+      const taskAct = task.activityId ? (p.activities || []).find(a => a.id === task.activityId) : null;
+      const taskFte = taskAct?.fte || 1;
+      const taskEffort = task.effort ?? task.duration ?? 1;
+      const calDuration = s.endDay - s.startDay + 1;
+      const ttLines = [
+        task.name,
+        'Effort: ' + taskEffort + ' person-days',
+        taskFte !== 1 ? 'FTE: ' + taskFte + '  →  ' + calDuration + ' calendar days' : 'Duration: ' + calDuration + 'd',
+      ];
+      if (task.assignee) ttLines.push('Assignee: ' + task.assignee);
+      bar.addEventListener('mouseenter', e => showGanttTooltip(e, ttLines));
+      bar.addEventListener('mousemove', e => moveGanttTooltip(e));
+      bar.addEventListener('mouseleave', hideGanttTooltip);
       barsG.appendChild(bar);
 
       if (w > 30 && !dimmed) {
@@ -1819,10 +1879,161 @@ function renderGantt() {
     labelsHeader.appendChild(hint);
   }
 
-  // Sync scroll
+  // Sync scroll (histogram scroll sync is attached by renderHistogram)
   const chartPanel = document.getElementById('gantt-chart-panel');
   const labelsBodyEl = document.getElementById('gantt-labels-body');
-  chartPanel.onscroll = () => { labelsBodyEl.scrollTop = chartPanel.scrollTop; };
+  chartPanel.onscroll = () => {
+    labelsBodyEl.scrollTop = chartPanel.scrollTop;
+    const histPanel = document.getElementById('histogram-chart-panel');
+    if (histPanel) histPanel.scrollLeft = chartPanel.scrollLeft;
+  };
+
+  renderHistogram(p, schedule, dayW, maxDay);
+}
+
+// ── Resource Histogram ───────────────────────────────────────
+function renderHistogram(p, schedule, dayW, maxDay) {
+  const el = document.getElementById('resource-histogram');
+  const labelsBody = document.getElementById('histogram-labels-body');
+  const svg = document.getElementById('histogram-svg');
+  const chartPanel = document.getElementById('histogram-chart-panel');
+
+  if (!p || !schedule) { el.classList.add('hidden'); return; }
+
+  const teams = p.teams || [];
+  const activities = p.activities || [];
+
+  // Build weekly buckets: for each team (+ unassigned), sum FTE-days per week
+  // Weeks: 0, 7, 14, ...
+  const numWeeks = Math.ceil((maxDay + 1) / 7);
+  const teamIds = teams.map(t => t.id);
+  const UNASSIGNED = '__unassigned__';
+
+  // allBuckets[teamId][weekIdx] = total FTE-days
+  const allBuckets = {};
+  [...teamIds, UNASSIGNED].forEach(id => {
+    allBuckets[id] = new Array(numWeeks).fill(0);
+  });
+
+  p.tasks.forEach(task => {
+    const s = schedule[task.id];
+    if (!s) return;
+    const act = task.activityId ? activities.find(a => a.id === task.activityId) : null;
+    const fte = act?.fte || 1;
+    const effort = task.effort ?? task.duration ?? 1;
+    const taskTeams = (task.teams || []).filter(id => teamIds.includes(id));
+    const ftePerTeam = taskTeams.length ? fte / taskTeams.length : fte;
+    const assignees = taskTeams.length ? taskTeams : [UNASSIGNED];
+
+    // Distribute effort proportionally across weeks the task overlaps
+    for (let w = 0; w < numWeeks; w++) {
+      const wStart = w * 7;
+      const wEnd = wStart + 6;
+      const overlapStart = Math.max(s.startDay, wStart);
+      const overlapEnd   = Math.min(s.endDay, wEnd);
+      if (overlapEnd < overlapStart) continue;
+      const overlapDays = overlapEnd - overlapStart + 1;
+      const calDur = s.endDay - s.startDay + 1;
+      // Fraction of effort in this week
+      const frac = overlapDays / calDur;
+      const effortInWeek = effort * frac;
+      assignees.forEach(tid => {
+        allBuckets[tid][w] += effortInWeek * (ftePerTeam / fte);
+      });
+    }
+  });
+
+  // Which teams have any load?
+  const activeTeams = [...teams.filter(t => allBuckets[t.id].some(v => v > 0.01))];
+  const hasUnassigned = allBuckets[UNASSIGNED].some(v => v > 0.01);
+
+  if (!activeTeams.length && !hasUnassigned) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+
+  const rows = [...activeTeams.map(t => ({ id: t.id, name: t.name, color: t.color }))];
+  if (hasUnassigned) rows.push({ id: UNASSIGNED, name: 'Unassigned', color: '#94a3b8' });
+
+  const BAR_MAX_H = 48;
+  const ROW_PAD = 6;
+  const HIST_ROW_H = BAR_MAX_H + ROW_PAD * 2 + 16; // bar + padding + label
+  const totalW = numWeeks * 7 * dayW;
+  const totalH = rows.length * HIST_ROW_H;
+
+  // Global max effort-days per week across all teams (for scale)
+  let globalMax = 0;
+  rows.forEach(r => {
+    allBuckets[r.id].forEach(v => { if (v > globalMax) globalMax = v; });
+  });
+  if (globalMax === 0) { el.classList.add('hidden'); return; }
+
+  svg.innerHTML = '';
+  svg.style.width  = totalW + 'px';
+  svg.style.height = totalH + 'px';
+  svg.setAttribute('width', totalW);
+  svg.setAttribute('height', totalH);
+  svg.setAttribute('viewBox', `0 0 ${totalW} ${totalH}`);
+
+  labelsBody.innerHTML = '';
+
+  rows.forEach((row, ri) => {
+    const rowY = ri * HIST_ROW_H;
+    const buckets = allBuckets[row.id];
+
+    // Label
+    const labelDiv = document.createElement('div');
+    labelDiv.className = 'histogram-label-row';
+    const dot = document.createElement('span');
+    dot.className = 'histogram-label-dot';
+    dot.style.background = row.color;
+    const name = document.createElement('span');
+    name.className = 'histogram-label-name';
+    name.textContent = row.name;
+    labelDiv.appendChild(dot);
+    labelDiv.appendChild(name);
+    labelsBody.appendChild(labelDiv);
+
+    // Row background
+    svg.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: HIST_ROW_H,
+      fill: ri % 2 === 0 ? 'none' : '#f8f9fb' }));
+
+    // Baseline
+    svg.appendChild(makeSVGEl('line', {
+      x1: 0, y1: rowY + ROW_PAD + BAR_MAX_H + 1,
+      x2: totalW, y2: rowY + ROW_PAD + BAR_MAX_H + 1,
+      stroke: '#e2e6ea', 'stroke-width': 1,
+    }));
+
+    buckets.forEach((val, wi) => {
+      if (val < 0.01) return;
+      const barH = Math.max(2, Math.round((val / globalMax) * BAR_MAX_H));
+      const bx = wi * 7 * dayW + 1;
+      const bw = Math.max(1, 7 * dayW - 2);
+      const by = rowY + ROW_PAD + BAR_MAX_H - barH;
+
+      const rect = makeSVGEl('rect', { x: bx, y: by, width: bw, height: barH,
+        fill: row.color, opacity: 0.75, rx: 2 });
+      svg.appendChild(rect);
+
+      // Value label inside bar if tall enough
+      if (barH > 14) {
+        const lbl = makeSVGEl('text', {
+          x: bx + bw / 2, y: by + barH - 4,
+          'text-anchor': 'middle', fill: '#fff', 'font-size': 9, 'font-weight': 600,
+        });
+        lbl.textContent = Math.round(val);
+        svg.appendChild(lbl);
+      }
+
+      // Tooltip
+      const title = makeSVGEl('title');
+      title.textContent = row.name + ': ' + val.toFixed(1) + ' person-days (week ' + (wi + 1) + ')';
+      rect.appendChild(title);
+    });
+  });
+
+  // Initial scroll position sync
+  const ganttChart = document.getElementById('gantt-chart-panel');
+  chartPanel.scrollLeft = ganttChart.scrollLeft;
 }
 
 function drawHeader(svg, startDate, maxDay, dayW, totalW) {
