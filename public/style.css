@@ -1735,7 +1735,7 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   cursor: default;
   user-select: none;
   transition: box-shadow .15s, border-color .15s;
-  overflow: hidden;
+  overflow: visible; /* handles poke out left/right */
 }
 
 .canvas-card:hover {
@@ -1774,6 +1774,7 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 .canvas-card-colorbar {
   width: 5px;
   flex-shrink: 0;
+  border-radius: 10px 0 0 10px; /* maintain rounded corner without overflow:hidden */
 }
 
 .canvas-card-body {
@@ -1845,7 +1846,7 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   line-height: 1.5;
 }
 
-/* Drag handle — right edge dot */
+/* Drag handles — right=finish, left=start */
 .canvas-card-handle {
   width: 22px;
   display: flex;
@@ -1857,6 +1858,16 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   transition: opacity .12s;
 }
 
+/* Left (start) handle — absolutely positioned, pokes outside card left edge */
+.canvas-card-handle-left {
+  position: absolute;
+  left: -11px;
+  top: 50%;
+  transform: translateY(-50%);
+  flex-shrink: unset;
+}
+
+/* Teal dot for start handle (SS color), indigo for finish handle (FS/FF color) */
 .canvas-card-handle::after {
   content: '';
   width: 9px;
@@ -1865,6 +1876,11 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   background: var(--accent);
   box-shadow: 0 0 0 2.5px white, 0 0 0 4px color-mix(in srgb, var(--accent) 35%, transparent);
   transition: transform .1s;
+}
+
+.canvas-card-handle-left::after {
+  background: #0891b2; /* SS / start color */
+  box-shadow: 0 0 0 2.5px white, 0 0 0 4px rgba(8,145,178,.35);
 }
 
 .canvas-card:hover .canvas-card-handle {

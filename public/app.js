@@ -2073,11 +2073,18 @@ function makeCanvasCard(task, p, schedule, arrowsSvg) {
   body.appendChild(meta);
   card.appendChild(body);
 
-  // Drag handle (right edge)
+  // Drag handles — right=finish, left=start
   const handle = document.createElement('div');
   handle.className = 'canvas-card-handle';
   handle.dataset.taskId = task.id;
+  handle.title = 'Drag to link from Finish (→FS or FF)';
   card.appendChild(handle);
+
+  const handleLeft = document.createElement('div');
+  handleLeft.className = 'canvas-card-handle canvas-card-handle-left';
+  handleLeft.dataset.taskId = task.id;
+  handleLeft.title = 'Drag to link from Start (→SS)';
+  card.appendChild(handleLeft);
 
   // ── Move drag ────────────────────────────────────
   card.addEventListener('mousedown', (e) => {
@@ -2113,25 +2120,26 @@ function makeCanvasCard(task, p, schedule, arrowsSvg) {
 
 function drawCanvasArrows(svg, p, byId) {
   [...svg.children].forEach(el => {
-    if (el.tagName !== 'defs' && el.id !== 'canvas-ghost-line' && el.id !== 'canvas-zone-indicator') el.remove();
+    if (el.tagName !== 'defs' && el.id !== 'canvas-ghost-line' && el.id !== 'canvas-zone-indicator' && el.id !== 'canvas-cursor-badge') el.remove();
   });
   p.tasks.forEach(task => {
-    const toX = task.canvasX || 0;
-    const toY = (task.canvasY || 0) + CARD_H / 2;
     normalizeDeps(task.dependencies).forEach(depObj => {
       const dep = byId[depObj.id];
       if (!dep) return;
-      const fromX = (dep.canvasX || 0) + CARD_W;
+      const type = depObj.type || 'FS';
+      // Draw from/to the semantically correct card edges
+      const fromX = type === 'SS' ? (dep.canvasX || 0) : (dep.canvasX || 0) + CARD_W;
+      const toX   = type === 'FF' ? (task.canvasX || 0) + CARD_W : (task.canvasX || 0);
       const fromY = (dep.canvasY || 0) + CARD_H / 2;
-      svg.appendChild(canvasBezier(fromX, fromY, toX, toY));
+      const toY   = (task.canvasY || 0) + CARD_H / 2;
+      svg.appendChild(canvasBezier(fromX, fromY, toX, toY, type));
 
       // Pill: [FS ×] — type cycles on click, × deletes
-      const type = depObj.type || 'FS';
       const mx = fromX + (toX - fromX) * 0.45;
       const my = fromY + (toY - fromY) * 0.45;
       const PW = 34, PH = 14;
 
-      const pill = makeSVGEl('g');
+      const pill = makeSVGEl('g', { 'pointer-events': 'all' });
       // Background
       pill.appendChild(makeSVGEl('rect', { x: mx - PW / 2, y: my - PH / 2, width: PW, height: PH, rx: 3, fill: '#fff', stroke: '#cbd5e1', 'stroke-width': 1 }));
       // Divider
@@ -2144,9 +2152,9 @@ function drawCanvasArrows(svg, p, byId) {
       const delEl = makeSVGEl('text', { x: mx + 11, y: my + 3, 'text-anchor': 'middle', 'font-size': 9, fill: '#94a3b8', 'font-weight': 700, style: 'cursor:pointer' });
       delEl.textContent = '×';
       pill.appendChild(delEl);
-      // Invisible hit zones
-      const typeZone = makeSVGEl('rect', { x: mx - PW / 2, y: my - PH / 2, width: PW - 12, height: PH, fill: 'transparent', style: 'cursor:pointer' });
-      const delZone  = makeSVGEl('rect', { x: mx + 4,      y: my - PH / 2, width: 12,        height: PH, fill: 'transparent', style: 'cursor:pointer' });
+      // Hit zones — fill:transparent with pointer-events:all so clicks register despite transparent fill
+      const typeZone = makeSVGEl('rect', { x: mx - PW / 2, y: my - PH / 2, width: PW - 12, height: PH, fill: 'transparent', 'pointer-events': 'all', style: 'cursor:pointer' });
+      const delZone  = makeSVGEl('rect', { x: mx + 4,      y: my - PH / 2, width: 12,        height: PH, fill: 'transparent', 'pointer-events': 'all', style: 'cursor:pointer' });
       pill.appendChild(typeZone);
       pill.appendChild(delZone);
 
@@ -2170,11 +2178,18 @@ function drawCanvasArrows(svg, p, byId) {
   });
 }
 
-function canvasBezier(x1, y1, x2, y2) {
+function canvasBezier(x1, y1, x2, y2, type) {
   const cx = Math.max(Math.abs(x2 - x1) * 0.5, 60);
+  // FF: both control points pull right (finish→finish loop)
+  // SS: both control points pull left (start→start loop)
+  // FS: standard forward S-curve
+  const d = type === 'FF'
+    ? `M ${x1} ${y1} C ${x1 + cx} ${y1}, ${x2 + cx} ${y2}, ${x2} ${y2}`
+    : type === 'SS'
+    ? `M ${x1} ${y1} C ${x1 - cx} ${y1}, ${x2 - cx} ${y2}, ${x2} ${y2}`
+    : `M ${x1} ${y1} C ${x1 + cx} ${y1}, ${x2 - cx} ${y2}, ${x2} ${y2}`;
   return makeSVGEl('path', {
-    d: `M ${x1} ${y1} C ${x1 + cx} ${y1}, ${x2 - cx} ${y2}, ${x2} ${y2}`,
-    stroke: '#94a3b8', 'stroke-width': 1.5, fill: 'none',
+    d, stroke: '#94a3b8', 'stroke-width': 1.5, fill: 'none',
     'marker-end': 'url(#canvas-arrow)',
   });
 }
@@ -2231,37 +2246,60 @@ function setupCanvasPanZoom(view, panArea) {
 function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
   const ghostLine = document.getElementById('canvas-ghost-line');
 
-  // Zone overlay: coloured band showing which dep type will be created
+  const DEP_ZONE_COLORS = { FS: '#5865f5', SS: '#0891b2', FF: '#d97706' };
+  let currentDepType = 'FS';
+
+  // Half-card zone overlay — highlights which anchor (start/finish) of target will be used
   const zoneIndicator = makeSVGEl('g', { id: 'canvas-zone-indicator', 'pointer-events': 'none' });
-  const zoneRect = makeSVGEl('rect', { rx: 6, ry: 6, opacity: 0.28 });
-  const zoneLabel = makeSVGEl('text', { 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 800, fill: '#fff', 'pointer-events': 'none' });
+  const zoneRect  = makeSVGEl('rect', { rx: 6, ry: 6, opacity: 0.52 });
+  const zoneLabel = makeSVGEl('text', { 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-size': 13, 'font-weight': 800, fill: '#fff', 'pointer-events': 'none' });
   zoneIndicator.appendChild(zoneRect);
   zoneIndicator.appendChild(zoneLabel);
   zoneIndicator.setAttribute('opacity', 0);
   arrowsSvg.appendChild(zoneIndicator);
 
-  const DEP_ZONE_COLORS = { FS: '#5865f5', SS: '#0891b2', FF: '#d97706' };
-  let currentDepType = 'FS';
+  // Floating type badge that follows the cursor tip
+  const cursorBadge = makeSVGEl('g', { id: 'canvas-cursor-badge', 'pointer-events': 'none' });
+  const badgeRect = makeSVGEl('rect', { rx: 4, ry: 4, height: 20, width: 34 });
+  const badgeText = makeSVGEl('text', { 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-size': 11, 'font-weight': 800, fill: '#fff' });
+  cursorBadge.appendChild(badgeRect);
+  cursorBadge.appendChild(badgeText);
+  cursorBadge.setAttribute('opacity', 0);
+  arrowsSvg.appendChild(cursorBadge);
 
-  function getZone(cursorX, cardX) {
-    const rel = (cursorX - cardX) / CARD_W;
-    if (rel < 0.33) return 'SS';
-    if (rel > 0.67) return 'FF';
-    return 'FS';
+  // Returns 'start' or 'finish' based on which half of the target card the cursor is over
+  function getTargetZone(cursorX, task) {
+    return cursorX < (task.canvasX || 0) + CARD_W / 2 ? 'start' : 'finish';
   }
 
-  function showZone(t, type) {
-    const zW = CARD_W / 3;
-    const zoneIdx = { SS: 0, FS: 1, FF: 2 }[type];
-    const zx = (t.canvasX || 0) + zoneIdx * zW;
-    const zy = t.canvasY || 0;
-    zoneRect.setAttribute('x', zx); zoneRect.setAttribute('y', zy);
-    zoneRect.setAttribute('width', zW); zoneRect.setAttribute('height', CARD_H);
+  // Maps dragged-from side + target zone to a dep type
+  function getDepType(side, targetZone) {
+    if (side === 'finish' && targetZone === 'start')  return 'FS';
+    if (side === 'finish' && targetZone === 'finish') return 'FF';
+    if (side === 'start'  && targetZone === 'start')  return 'SS';
+    return 'FS'; // start→finish (unusual) falls back to FS
+  }
+
+  function showZone(task, targetZone, type) {
+    const halfW = CARD_W / 2;
+    const zx = targetZone === 'start' ? (task.canvasX || 0) : (task.canvasX || 0) + halfW;
+    const zy = task.canvasY || 0;
+    zoneRect.setAttribute('x', zx);      zoneRect.setAttribute('y', zy);
+    zoneRect.setAttribute('width', halfW); zoneRect.setAttribute('height', CARD_H);
     zoneRect.setAttribute('fill', DEP_ZONE_COLORS[type]);
-    zoneLabel.setAttribute('x', zx + zW / 2);
-    zoneLabel.setAttribute('y', zy + CARD_H / 2 + 4);
+    zoneLabel.setAttribute('x', zx + halfW / 2);
+    zoneLabel.setAttribute('y', zy + CARD_H / 2);
     zoneLabel.textContent = type;
     zoneIndicator.setAttribute('opacity', 1);
+  }
+
+  function updateBadge(x, y, type) {
+    const color = DEP_ZONE_COLORS[type];
+    badgeRect.setAttribute('x', x + 14); badgeRect.setAttribute('y', y - 22);
+    badgeRect.setAttribute('fill', color);
+    badgeText.setAttribute('x', x + 14 + 17); badgeText.setAttribute('y', y - 12);
+    badgeText.textContent = type;
+    cursorBadge.setAttribute('opacity', 1);
   }
 
   panArea.addEventListener('mousedown', (e) => {
@@ -2274,24 +2312,27 @@ function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
     const task = byId[taskId];
     if (!task) return;
 
-    const fromX = (task.canvasX || 0) + CARD_W;
+    // Left handle = dragging from Start; right handle = dragging from Finish
+    const side = handle.classList.contains('canvas-card-handle-left') ? 'start' : 'finish';
+    const fromX = side === 'start' ? (task.canvasX || 0) : (task.canvasX || 0) + CARD_W;
     const fromY = (task.canvasY || 0) + CARD_H / 2;
     const viewRect = view.getBoundingClientRect();
-    currentDepType = 'FS';
+    currentDepType = side === 'start' ? 'SS' : 'FS';
 
     document.querySelectorAll(`.canvas-card:not([data-task-id="${taskId}"])`).forEach(c => {
       c.classList.add('dep-target');
     });
 
-    const toLocal = (e) => ({
-      x: (e.clientX - viewRect.left - canvasState.pan.x) / canvasState.zoom,
-      y: (e.clientY - viewRect.top  - canvasState.pan.y) / canvasState.zoom,
+    const toLocal = (ev) => ({
+      x: (ev.clientX - viewRect.left - canvasState.pan.x) / canvasState.zoom,
+      y: (ev.clientY - viewRect.top  - canvasState.pan.y) / canvasState.zoom,
     });
 
-    const onMove = (e) => {
-      const { x, y } = toLocal(e);
+    const onMove = (ev) => {
+      const { x, y } = toLocal(ev);
       ghostLine.setAttribute('x1', fromX); ghostLine.setAttribute('y1', fromY);
       ghostLine.setAttribute('x2', x);     ghostLine.setAttribute('y2', y);
+      ghostLine.setAttribute('stroke', DEP_ZONE_COLORS[currentDepType]);
       ghostLine.setAttribute('opacity', 1);
 
       let hoveredTask = null;
@@ -2303,7 +2344,7 @@ function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
         c.classList.toggle('dep-hover', inside);
         if (inside) {
           hoveredTask = t;
-          const bad = wouldCreateCycle(p, taskId, c.dataset.taskId);
+          const bad = wouldCreateCycle(p, taskId, t.id);
           c.classList.toggle('dep-bad', bad);
           c.classList.toggle('dep-good', !bad);
         } else {
@@ -2311,18 +2352,22 @@ function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
         }
       });
 
-      if (hoveredTask && !wouldCreateCycle(p, taskId, document.querySelector('.canvas-card.dep-hover')?.dataset.taskId)) {
-        currentDepType = getZone(x, hoveredTask.canvasX || 0);
-        showZone(hoveredTask, currentDepType);
+      if (hoveredTask && !wouldCreateCycle(p, taskId, hoveredTask.id)) {
+        const targetZone = getTargetZone(x, hoveredTask);
+        currentDepType = getDepType(side, targetZone);
+        showZone(hoveredTask, targetZone, currentDepType);
       } else {
         zoneIndicator.setAttribute('opacity', 0);
-        currentDepType = 'FS';
+        currentDepType = getDepType(side, 'start');
       }
+
+      updateBadge(x, y, currentDepType);
     };
 
     const onUp = () => {
       ghostLine.setAttribute('opacity', 0);
       zoneIndicator.setAttribute('opacity', 0);
+      cursorBadge.setAttribute('opacity', 0);
 
       const hovered = document.querySelector('.canvas-card.dep-hover');
       if (hovered) {
