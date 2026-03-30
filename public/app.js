@@ -77,6 +77,117 @@ function daysBetween(a, b) {
   return Math.round((b - a) / 86400000);
 }
 
+// ── Working-Day Calendar (Victoria, Australia) ────────────────
+
+const _vicHolidayCache = {};
+
+function _easterSunday(year) {
+  const a = year % 19, b = Math.floor(year / 100), c = year % 100;
+  const d = Math.floor(b / 4), e = b % 4;
+  const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4), k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
+
+function _observedHoliday(year, month, day) {
+  // Returns observed date string (Mon if Sat/Sun, with 1-based month)
+  const d = new Date(year, month - 1, day);
+  const dow = d.getDay();
+  if (dow === 6) d.setDate(day + 2);
+  else if (dow === 0) d.setDate(day + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function _nthWeekday(year, month, weekday, n) {
+  // nth weekday (0=Sun) in month (1-based)
+  const d = new Date(year, month - 1, 1);
+  let count = 0;
+  while (d.getMonth() === month - 1) {
+    if (d.getDay() === weekday && ++count === n) return d.toISOString().slice(0, 10);
+    d.setDate(d.getDate() + 1);
+  }
+  return null;
+}
+
+function _lastWeekday(year, month, weekday) {
+  const d = new Date(year, month, 0); // last day of month
+  while (d.getDay() !== weekday) d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function getVicHolidays(year) {
+  if (_vicHolidayCache[year]) return _vicHolidayCache[year];
+  const h = new Set();
+  // New Year's Day
+  h.add(_observedHoliday(year, 1, 1));
+  // Australia Day
+  h.add(_observedHoliday(year, 1, 26));
+  // Easter
+  const easter = _easterSunday(year);
+  [-2, -1, 1].forEach(n => {
+    const d = new Date(easter);
+    d.setDate(d.getDate() + n);
+    h.add(d.toISOString().slice(0, 10));
+  });
+  // Labour Day: 2nd Monday March
+  h.add(_nthWeekday(year, 3, 1, 2));
+  // ANZAC Day
+  h.add(_observedHoliday(year, 4, 25));
+  // King's Birthday (Vic): 2nd Monday June
+  h.add(_nthWeekday(year, 6, 1, 2));
+  // AFL Grand Final Eve: Friday before last Saturday in September
+  const lastSatSep = new Date(_lastWeekday(year, 9, 6));
+  lastSatSep.setDate(lastSatSep.getDate() - 1);
+  h.add(lastSatSep.toISOString().slice(0, 10));
+  // Melbourne Cup: 1st Tuesday November
+  h.add(_nthWeekday(year, 11, 2, 1));
+  // Christmas / Boxing Day (handle Sat/Sun cases)
+  const xmasDow = new Date(year, 11, 25).getDay();
+  if (xmasDow === 5)      { h.add(`${year}-12-25`); h.add(`${year}-12-28`); }
+  else if (xmasDow === 6) { h.add(`${year}-12-27`); h.add(`${year}-12-28`); }
+  else if (xmasDow === 0) { h.add(`${year}-12-26`); h.add(`${year}-12-27`); }
+  else                    { h.add(`${year}-12-25`); h.add(`${year}-12-26`); }
+  _vicHolidayCache[year] = h;
+  return h;
+}
+
+function isWorkingDay(date) {
+  const dow = date.getDay();
+  if (dow === 0 || dow === 6) return false;
+  return !getVicHolidays(date.getFullYear()).has(date.toISOString().slice(0, 10));
+}
+
+// Snap calOffset forward to next (or same) working day. Returns offset.
+function nextWorkDay(calOffset, projStart) {
+  if (!projStart) return calOffset;
+  const base = new Date(projStart + 'T00:00:00');
+  const d = new Date(base);
+  d.setDate(d.getDate() + calOffset);
+  let offset = calOffset;
+  while (!isWorkingDay(d)) { d.setDate(d.getDate() + 1); offset++; }
+  return offset;
+}
+
+// Calendar days needed starting at startOffset to cover workDays working days.
+function calSpanForward(startOffset, workDays, projStart) {
+  if (!projStart || workDays <= 0) return workDays;
+  const base = new Date(projStart + 'T00:00:00');
+  const d = new Date(base);
+  d.setDate(d.getDate() + startOffset);
+  let counted = 0, span = 0;
+  while (counted < workDays) {
+    if (isWorkingDay(d)) counted++;
+    d.setDate(d.getDate() + 1);
+    span++;
+  }
+  return span;
+}
+
 function currentProject() {
   return state.projects.find(p => p.id === state.currentId) || null;
 }
@@ -100,7 +211,8 @@ function normalizeDeps(deps) {
 }
 
 // ── Schedule Computation ─────────────────────────────────────
-function taskCalDays(task, project) {
+// Returns working days required (effort ÷ FTE, rounded up, min 1)
+function taskWorkDays(task, project) {
   const act = task.activityId ? (project.activities || []).find(a => a.id === task.activityId) : null;
   const fte = act?.fte || 1;
   const effort = task.effort ?? task.duration ?? 1;
@@ -140,32 +252,40 @@ function computeSchedule(project) {
 
   if (order.length !== tasks.length) return null; // cycle
 
+  const projStart = project.startDate || null;
   const earlyStart = {};
   const earlyEnd = {};
-  const fixedViolations = new Set(); // task IDs where fixed start precedes dep completion
+  const taskSpan = {}; // calendar span per task (working-day aware)
+  const fixedViolations = new Set();
 
   for (const id of order) {
     const t = byId[id];
-    const dur = taskCalDays(t, project);
+    const workDays = taskWorkDays(t, project);
     const normDeps = normalizeDeps(t.dependencies).filter(d => byId[d.id]);
     let depsStart = 0;
     if (normDeps.length) {
       depsStart = Math.max(0, Math.max(...normDeps.map(dep => {
-        if (dep.type === 'FF') return (earlyEnd[dep.id] || 0) - dur;
+        if (dep.type === 'FF') return (earlyEnd[dep.id] || 0) - workDays; // approx
         if (dep.type === 'SS') return earlyStart[dep.id] || 0;
         return earlyEnd[dep.id] || 0; // FS (default)
       })));
     }
+
+    let startDay;
     if (t.fixedStart != null) {
-      const fixedOffset = project.startDate
-        ? Math.round((new Date(t.fixedStart + 'T00:00:00') - new Date(project.startDate + 'T00:00:00')) / 86400000)
+      const rawOffset = projStart
+        ? Math.round((new Date(t.fixedStart + 'T00:00:00') - new Date(projStart + 'T00:00:00')) / 86400000)
         : 0;
-      earlyStart[id] = fixedOffset;
-      if (fixedOffset < depsStart) fixedViolations.add(id);
+      startDay = nextWorkDay(rawOffset, projStart);
+      if (startDay < nextWorkDay(depsStart, projStart)) fixedViolations.add(id);
     } else {
-      earlyStart[id] = depsStart;
+      startDay = nextWorkDay(depsStart, projStart);
     }
-    earlyEnd[id] = earlyStart[id] + dur;
+
+    const span = calSpanForward(startDay, workDays, projStart);
+    earlyStart[id] = startDay;
+    earlyEnd[id] = startDay + span;
+    taskSpan[id] = span;
   }
 
   const projectDuration = Math.max(...Object.values(earlyEnd));
@@ -173,16 +293,16 @@ function computeSchedule(project) {
   const lateStart = {};
 
   for (const id of [...order].reverse()) {
-    const dur = taskCalDays(byId[id], project);
+    const span = taskSpan[id];
     let lateE = projectDuration;
     for (const { succId, type } of adj[id]) {
       if (!byId[succId]) continue;
       if (type === 'FF') lateE = Math.min(lateE, lateEnd[succId]);
-      else if (type === 'SS') lateE = Math.min(lateE, lateStart[succId] + dur);
+      else if (type === 'SS') lateE = Math.min(lateE, lateStart[succId] + span);
       else lateE = Math.min(lateE, lateStart[succId]); // FS
     }
     lateEnd[id] = lateE;
-    lateStart[id] = lateE - dur;
+    lateStart[id] = lateE - span;
   }
 
   const result = {};
@@ -1057,11 +1177,13 @@ function renderTable() {
 
     const effort = task.effort ?? task.duration ?? 1;
     tr.appendChild(makeNumCell(task.id, 'effort', effort));
-    const calDays = taskCalDays(task, p);
+    // Calendar span: use schedule result when available (reflects weekends/holidays),
+    // otherwise fall back to working-days estimate
+    const calDays = s ? (s.endDay - s.startDay + 1) : taskWorkDays(task, p);
     const calTd = document.createElement('td');
     calTd.className = 'cal-days-cell';
     calTd.textContent = calDays + 'd';
-    calTd.title = 'Calendar duration = effort ÷ FTE';
+    calTd.title = 'Calendar duration (spans weekends & public holidays)';
     tr.appendChild(calTd);
     tr.appendChild(makeDepsCell(task, p));
     tr.appendChild(makeTeamsCell(task, p));
@@ -2081,13 +2203,29 @@ function renderGantt() {
       nameEl.className = 'gantt-deliv-header-name';
       nameEl.textContent = deliv.name;
 
+      const delivEffort  = delivTasks.reduce((s, t) => s + (t.effort ?? t.duration ?? 1), 0);
+      const delivFte     = (p.activities || []).filter(a => a.deliverableId === deliv.id)
+                             .reduce((s, a) => s + (a.fte || 1), 0);
+      const delivSched   = delivTasks.map(t => schedule[t.id]).filter(Boolean);
+      const delivDur     = delivSched.length
+        ? Math.max(...delivSched.map(s => s.endDay)) - Math.min(...delivSched.map(s => s.startDay)) + 1
+        : null;
+
       const countEl = document.createElement('span');
       countEl.className = 'gantt-deliv-header-count';
       countEl.textContent = delivTasks.length + (delivTasks.length === 1 ? ' task' : ' tasks');
 
+      const dStatsEl = document.createElement('span');
+      dStatsEl.className = 'gantt-row-stats';
+      dStatsEl.innerHTML =
+        `<span title="Total effort">${delivEffort}pd</span>` +
+        (delivDur != null ? `<span class="stats-sep">·</span><span title="Calendar duration">${delivDur}d</span>` : '') +
+        `<span class="stats-sep">·</span><span title="Total FTE">${delivFte}FTE</span>`;
+
       headerRow.appendChild(toggle);
       headerRow.appendChild(nameEl);
       headerRow.appendChild(countEl);
+      headerRow.appendChild(dStatsEl);
 
       headerRow.addEventListener('click', () => {
         if (collapsedDeliverables.has(deliv.id)) collapsedDeliverables.delete(deliv.id);
@@ -2130,30 +2268,32 @@ function renderGantt() {
       aName.className = 'gantt-activity-header-name';
       aName.textContent = activity.name;
 
-      const aCount = document.createElement('span');
-      aCount.className = 'gantt-deliv-header-count';
-      aCount.textContent = gTasks.length + (gTasks.length === 1 ? ' task' : ' tasks');
+      const actEffort  = gTasks.reduce((s, t) => s + (t.effort ?? t.duration ?? 1), 0);
+      const actFte     = activity.fte || 1;
+      const actSched   = gTasks.map(t => schedule[t.id]).filter(Boolean);
+      const actDur     = actSched.length
+        ? Math.max(...actSched.map(s => s.endDay)) - Math.min(...actSched.map(s => s.startDay)) + 1
+        : null;
+
+      const aStatsEl = document.createElement('span');
+      aStatsEl.className = 'gantt-row-stats';
+      aStatsEl.innerHTML =
+        `<span title="Total effort">${actEffort}pd</span>` +
+        (actDur != null ? `<span class="stats-sep">·</span><span title="Calendar duration">${actDur}d</span>` : '') +
+        `<span class="stats-sep">·</span><span title="FTE">${actFte}FTE</span>`;
+
+      const actTeam = activity.teamId ? (p.teams || []).find(t => t.id === activity.teamId) : null;
 
       actRow.appendChild(aToggle);
       actRow.appendChild(aName);
-      actRow.appendChild(aCount);
+      actRow.appendChild(aStatsEl);
 
-      const actTeam = activity.teamId ? (p.teams || []).find(t => t.id === activity.teamId) : null;
       if (actTeam) {
         const teamBadge = document.createElement('span');
         teamBadge.className = 'gantt-activity-team-badge';
         teamBadge.style.cssText = `background:${actTeam.color}22;color:${actTeam.color};border-color:${actTeam.color}55`;
         teamBadge.textContent = actTeam.name;
         actRow.appendChild(teamBadge);
-      }
-
-      const actFte = activity.fte || 1;
-      if (actFte !== 1) {
-        const fteBadge = document.createElement('span');
-        fteBadge.className = 'gantt-fte-badge';
-        fteBadge.textContent = '×' + actFte;
-        fteBadge.title = actFte + ' FTE';
-        actRow.appendChild(fteBadge);
       }
 
       actRow.addEventListener('click', () => {
@@ -2728,7 +2868,7 @@ function makeCanvasCard(task, p, schedule, arrowsSvg) {
 
   const dur = document.createElement('span');
   dur.className = 'canvas-card-dur';
-  const calD = taskCalDays(task, p);
+  const calD = taskWorkDays(task, p);
   const effortD = task.effort ?? task.duration ?? 1;
   const actFteVal = act?.fte || 1;
   dur.textContent = calD + 'd' + (actFteVal !== 1 ? ' (' + effortD + 'pd)' : '');

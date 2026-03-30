@@ -1401,6 +1401,19 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   flex-shrink: 0;
 }
 
+.gantt-row-stats {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 10px;
+  font-family: 'DM Mono', monospace;
+  color: var(--text-4);
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.gantt-row-stats span { color: var(--text-3); }
+
 .gantt-activity-team-badge {
   font-size: 10px;
   font-weight: 600;
