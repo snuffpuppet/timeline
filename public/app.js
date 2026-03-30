@@ -2169,8 +2169,16 @@ function renderGantt() {
     } else if (row.type === 'deliv-header') {
       const { deliv, delivTasks, collapsed } = row;
 
-      // Summary bar spanning the full deliverable date range (shown when collapsed;
-      // shown faintly when expanded so you can see the overall envelope)
+      // Compute stats before bar so we can render them on the bar
+      const delivEffort  = delivTasks.reduce((s, t) => s + (t.effort ?? t.duration ?? 1), 0);
+      const delivFte     = (p.activities || []).filter(a => a.deliverableId === deliv.id)
+                             .reduce((s, a) => s + (a.fte || 1), 0);
+      const delivSched   = delivTasks.map(t => schedule[t.id]).filter(Boolean);
+      const delivDur     = delivSched.length
+        ? Math.max(...delivSched.map(s => s.endDay)) - Math.min(...delivSched.map(s => s.startDay)) + 1
+        : null;
+
+      // Summary bar spanning the full deliverable date range
       const scheduled = delivTasks.filter(t => schedule[t.id]);
       if (scheduled.length) {
         const minStart = Math.min(...scheduled.map(t => schedule[t.id].startDay));
@@ -2181,11 +2189,22 @@ function renderGantt() {
         const bar = makeSVGEl('rect', { x, y, width: w, height: BAR_H,
           fill: deliv.color, rx: 4, ry: 4, opacity: collapsed ? 0.6 : 0.25 });
         barsG.appendChild(bar);
+        const textFill = collapsed ? '#fff' : deliv.color;
         if (collapsed && w > 50) {
           const lbl = makeSVGEl('text', { x: x + 7, y: y + BAR_H / 2 + 4,
-            fill: '#fff', 'font-size': 11, 'font-weight': 600 });
+            fill: textFill, 'font-size': 11, 'font-weight': 600 });
           lbl.textContent = truncate(deliv.name + ' (' + scheduled.length + ')', Math.floor(w / 7));
           barsG.appendChild(lbl);
+        }
+        // Stats on bar (right-aligned)
+        if (w > 110) {
+          const statsStr = delivEffort + 'pd' +
+            (delivDur != null ? ' · ' + delivDur + 'd' : '') +
+            ' · ' + delivFte + 'FTE';
+          const statsLbl = makeSVGEl('text', { x: x + w - 6, y: y + BAR_H / 2 + 4,
+            fill: textFill, 'font-size': 10, 'font-weight': 500, 'text-anchor': 'end', opacity: 0.85 });
+          statsLbl.textContent = statsStr;
+          barsG.appendChild(statsLbl);
         }
       }
 
@@ -2203,29 +2222,13 @@ function renderGantt() {
       nameEl.className = 'gantt-deliv-header-name';
       nameEl.textContent = deliv.name;
 
-      const delivEffort  = delivTasks.reduce((s, t) => s + (t.effort ?? t.duration ?? 1), 0);
-      const delivFte     = (p.activities || []).filter(a => a.deliverableId === deliv.id)
-                             .reduce((s, a) => s + (a.fte || 1), 0);
-      const delivSched   = delivTasks.map(t => schedule[t.id]).filter(Boolean);
-      const delivDur     = delivSched.length
-        ? Math.max(...delivSched.map(s => s.endDay)) - Math.min(...delivSched.map(s => s.startDay)) + 1
-        : null;
-
       const countEl = document.createElement('span');
       countEl.className = 'gantt-deliv-header-count';
       countEl.textContent = delivTasks.length + (delivTasks.length === 1 ? ' task' : ' tasks');
 
-      const dStatsEl = document.createElement('span');
-      dStatsEl.className = 'gantt-row-stats';
-      dStatsEl.innerHTML =
-        `<span title="Total effort">${delivEffort}pd</span>` +
-        (delivDur != null ? `<span class="stats-sep">·</span><span title="Calendar duration">${delivDur}d</span>` : '') +
-        `<span class="stats-sep">·</span><span title="Total FTE">${delivFte}FTE</span>`;
-
       headerRow.appendChild(toggle);
       headerRow.appendChild(nameEl);
       headerRow.appendChild(countEl);
-      headerRow.appendChild(dStatsEl);
 
       headerRow.addEventListener('click', () => {
         if (collapsedDeliverables.has(deliv.id)) collapsedDeliverables.delete(deliv.id);
@@ -2238,7 +2241,15 @@ function renderGantt() {
     } else if (row.type === 'activity-header') {
       const { activity, gTasks, collapsed } = row;
 
-      // Summary bar for collapsed activity
+      // Compute stats before bar so we can render them on the bar
+      const actEffort  = gTasks.reduce((s, t) => s + (t.effort ?? t.duration ?? 1), 0);
+      const actFte     = activity.fte || 1;
+      const actSched   = gTasks.map(t => schedule[t.id]).filter(Boolean);
+      const actDur     = actSched.length
+        ? Math.max(...actSched.map(s => s.endDay)) - Math.min(...actSched.map(s => s.startDay)) + 1
+        : null;
+
+      // Summary bar for activity
       const scheduled = gTasks.filter(t => schedule[t.id]);
       if (scheduled.length) {
         const minStart = Math.min(...scheduled.map(t => schedule[t.id].startDay));
@@ -2249,11 +2260,22 @@ function renderGantt() {
         const bar = makeSVGEl('rect', { x, y, width: w, height: BAR_H,
           fill: '#6b7280', rx: 4, ry: 4, opacity: collapsed ? 0.55 : 0.15 });
         barsG.appendChild(bar);
+        const textFill = collapsed ? '#fff' : '#4b5563';
         if (collapsed && w > 40) {
           const lbl = makeSVGEl('text', { x: x + 7, y: y + BAR_H / 2 + 4,
-            fill: '#fff', 'font-size': 11, 'font-weight': 600 });
+            fill: textFill, 'font-size': 11, 'font-weight': 600 });
           lbl.textContent = truncate(activity.name + ' (' + scheduled.length + ')', Math.floor(w / 7));
           barsG.appendChild(lbl);
+        }
+        // Stats on bar (right-aligned)
+        if (w > 110) {
+          const statsStr = actEffort + 'pd' +
+            (actDur != null ? ' · ' + actDur + 'd' : '') +
+            ' · ' + actFte + 'FTE';
+          const statsLbl = makeSVGEl('text', { x: x + w - 6, y: y + BAR_H / 2 + 4,
+            fill: textFill, 'font-size': 10, 'font-weight': 500, 'text-anchor': 'end', opacity: 0.85 });
+          statsLbl.textContent = statsStr;
+          barsG.appendChild(statsLbl);
         }
       }
 
@@ -2268,25 +2290,10 @@ function renderGantt() {
       aName.className = 'gantt-activity-header-name';
       aName.textContent = activity.name;
 
-      const actEffort  = gTasks.reduce((s, t) => s + (t.effort ?? t.duration ?? 1), 0);
-      const actFte     = activity.fte || 1;
-      const actSched   = gTasks.map(t => schedule[t.id]).filter(Boolean);
-      const actDur     = actSched.length
-        ? Math.max(...actSched.map(s => s.endDay)) - Math.min(...actSched.map(s => s.startDay)) + 1
-        : null;
-
-      const aStatsEl = document.createElement('span');
-      aStatsEl.className = 'gantt-row-stats';
-      aStatsEl.innerHTML =
-        `<span title="Total effort">${actEffort}pd</span>` +
-        (actDur != null ? `<span class="stats-sep">·</span><span title="Calendar duration">${actDur}d</span>` : '') +
-        `<span class="stats-sep">·</span><span title="FTE">${actFte}FTE</span>`;
-
       const actTeam = activity.teamId ? (p.teams || []).find(t => t.id === activity.teamId) : null;
 
       actRow.appendChild(aToggle);
       actRow.appendChild(aName);
-      actRow.appendChild(aStatsEl);
 
       if (actTeam) {
         const teamBadge = document.createElement('span');
@@ -2599,9 +2606,14 @@ function renderHistogram(p, schedule, dayW, maxDay) {
     });
   });
 
-  // Initial scroll position sync
+  // Initial horizontal scroll position sync with gantt
   const ganttChart = document.getElementById('gantt-chart-panel');
   chartPanel.scrollLeft = ganttChart.scrollLeft;
+
+  // Vertical scroll sync: chart panel → labels body
+  chartPanel.onscroll = () => {
+    labelsBody.scrollTop = chartPanel.scrollTop;
+  };
 }
 
 function drawHeader(svg, startDate, maxDay, dayW, totalW) {
@@ -2609,7 +2621,7 @@ function drawHeader(svg, startDate, maxDay, dayW, totalW) {
   const months = {};
   for (let day = 0; day <= maxDay; day++) {
     const d = addDays(startDate, day);
-    const key = `${d.getFullYear()}-${d.getMonth()}`;
+    const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2, '0')}`;
     if (!months[key]) months[key] = { x: day * dayW, label: d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) };
   }
 

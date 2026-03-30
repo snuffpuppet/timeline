@@ -2346,7 +2346,8 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   flex-shrink: 0;
   border-top: 2px solid var(--border);
   background: var(--bg);
-  max-height: 220px;
+  max-height: 320px;
+  min-height: 80px;
 }
 
 #histogram-labels-panel {
@@ -2374,7 +2375,9 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 #histogram-labels-body {
   overflow-y: hidden;
   flex: 1;
+  scrollbar-width: none;
 }
+#histogram-labels-body::-webkit-scrollbar { display: none; }
 
 .histogram-label-row {
   display: flex;
@@ -2402,8 +2405,12 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 #histogram-chart-panel {
   flex: 1;
   overflow-x: hidden;
-  overflow-y: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
 }
+#histogram-chart-panel::-webkit-scrollbar { width: 6px; height: 6px; }
+#histogram-chart-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
 /* ── Print ──────────────────────────────────────────────────── */
 @media print {
