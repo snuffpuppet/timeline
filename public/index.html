@@ -50,6 +50,7 @@
             <button class="zoom-btn active" data-zoom="week">Week</button>
             <button class="zoom-btn" data-zoom="month">Month</button>
           </div>
+          <button id="streams-btn">Streams...</button>
           <button id="teams-btn">Teams...</button>
           <button id="deliverables-btn">Deliverables...</button>
           <span id="save-indicator">Saved</span>
@@ -120,6 +121,19 @@
 
     </div><!-- /main -->
   </div><!-- /app -->
+
+  <!-- Streams management modal -->
+  <div id="streams-overlay" class="modal-overlay hidden">
+    <div id="streams-modal-box">
+      <div id="streams-modal-header">
+        <h3>Streams</h3>
+        <button id="streams-modal-close" class="icon-btn">×</button>
+      </div>
+      <p class="teams-hint">Define streams to group related deliverables. Streams appear as top-level swimlanes in the Gantt view. Assign deliverables to streams via the Deliverables panel.</p>
+      <div id="streams-list"></div>
+      <button id="add-stream-btn">+ Add Stream</button>
+    </div>
+  </div>
 
   <!-- Deliverables management modal -->
   <div id="deliverables-overlay" class="modal-overlay hidden">

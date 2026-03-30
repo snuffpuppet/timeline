@@ -1175,6 +1175,55 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 }
 .dep-chip-remove:hover { color: var(--danger); }
 
+/* Type badge inside dep chip */
+.dep-type-badge {
+  font-size: 9px;
+  font-weight: 700;
+  font-family: 'DM Mono', monospace;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-radius: 2px;
+  padding: 1px 3px;
+  cursor: pointer;
+  letter-spacing: .02em;
+  transition: background .12s;
+}
+.dep-type-badge:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* Type badge inside dep popover (clickable) */
+.dep-type-inline {
+  font-size: 9px;
+  font-weight: 700;
+  font-family: 'DM Mono', monospace;
+  color: var(--accent);
+  background: var(--accent-sub);
+  border: 1px solid var(--accent-muted);
+  border-radius: 3px;
+  padding: 1px 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  margin-left: auto;
+  transition: background .12s;
+}
+.dep-type-inline:hover {
+  background: var(--accent-muted);
+  color: var(--surface);
+}
+
+/* Context label in dep popover */
+.dep-popover-context {
+  font-size: 10px;
+  color: var(--text-4);
+  flex-shrink: 0;
+  margin-left: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
 .dep-add-btn {
   background: none;
   border: 1.5px dashed var(--border-2);
@@ -1192,6 +1241,38 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-sub);
+}
+
+/* ── Gantt Stream Header Row ────────────────────────────────── */
+.gantt-stream-header-row {
+  height: var(--row-h);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid #dde0e8;
+  cursor: pointer;
+  user-select: none;
+  transition: filter .1s;
+  flex-shrink: 0;
+}
+.gantt-stream-header-row:hover { filter: brightness(.96); }
+
+.gantt-stream-header-name {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+/* Deliverable headers indented within a stream */
+.gantt-deliv-header-row.within-stream {
+  padding-left: 22px;
 }
 
 /* ── Gantt Deliverable Header Row ───────────────────────────── */
@@ -1235,6 +1316,31 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   color: var(--text-4);
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+/* ── Gantt Group Header Row ─────────────────────────────────── */
+.gantt-group-header-row {
+  height: var(--row-h);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px 0 28px;
+  cursor: pointer;
+  background: #f8f9fa;
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  transition: filter .12s;
+}
+.gantt-group-header-row:hover { filter: brightness(.97); }
+
+.gantt-group-header-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Gantt Drag Hint ────────────────────────────────────────── */
@@ -1291,7 +1397,98 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   box-shadow: 0 4px 12px rgba(88,101,245,.4);
 }
 
+/* ── Streams modal ──────────────────────────────────────────── */
+#streams-modal-box {
+  background: var(--surface);
+  border-radius: var(--r-xl);
+  width: 460px;
+  max-width: 95vw;
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+#streams-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+}
+#streams-modal-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -.01em;
+}
+#streams-list {
+  padding: 8px 0;
+  max-height: 340px;
+  overflow-y: auto;
+}
+#add-stream-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: calc(100% - 48px);
+  margin: 6px 24px 20px;
+  padding: 9px;
+  border: 1.5px dashed var(--border-2);
+  border-radius: var(--r);
+  background: transparent;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  cursor: pointer;
+  text-align: center;
+  transition: all .15s;
+}
+#add-stream-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-sub);
+}
+
+/* Stream selector in deliverables modal */
+.stream-select {
+  flex: 0 0 auto;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg);
+  outline: none;
+  cursor: pointer;
+  transition: border-color .15s;
+}
+.stream-select:focus { border-color: var(--accent); }
+
 /* ── Deliverable / Task / Activity hierarchy ────────────────── */
+
+/* Stream header rows (table) */
+.stream-header-row td {
+  padding: 0;
+  background: #e8eaf2;
+  border-top: 2px solid var(--border-2);
+  border-bottom: 1px solid var(--border);
+}
+.stream-row-inner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 32px;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--text-2);
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.stream-row-name { flex: 1; }
 
 /* Deliverable header rows */
 .deliverable-header-row td {
@@ -1525,6 +1722,7 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 .canvas-card {
   position: absolute;
   width: 210px;
+  min-height: 86px;
   background: var(--surface);
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -1578,6 +1776,16 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   flex: 1;
   padding: 9px 10px 9px 10px;
   min-width: 0;
+}
+
+.canvas-card-context {
+  font-size: 9.5px;
+  color: var(--text-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+  letter-spacing: .01em;
 }
 
 .canvas-card-name {

@@ -29,9 +29,11 @@ const ACTIVITY_TYPES = [
 ];
 
 const CARD_W = 210;
-const CARD_H = 74;
+const CARD_H = 86;
 const CANVAS_COL_GAP = 290;
 const CANVAS_ROW_GAP = 100;
+
+const DEP_TYPES = ['FS', 'FF', 'SS'];
 
 // ── State ────────────────────────────────────────────────────
 let state = {
@@ -49,6 +51,8 @@ let dragDep = null; // { fromId, fromX, fromY } — active Gantt drag state
 
 let canvasState = { pan: { x: 60, y: 60 }, zoom: 1 };
 let collapsedDeliverables = new Set(); // deliverable IDs collapsed in Gantt view
+let collapsedStreams = new Set();      // stream IDs collapsed in Gantt view
+let collapsedGroups = new Set();       // task group IDs collapsed in Gantt view
 let canvasDepDrag = null;
 let _taskRowMap = {}; // taskId → 1-based index in p.tasks[], rebuilt by renderTable
 
@@ -89,6 +93,11 @@ function actTypeOrder(id) {
   return i === -1 ? 99 : i;
 }
 
+// Normalize deps: supports legacy string[] and new {id,type}[] formats
+function normalizeDeps(deps) {
+  return (deps || []).map(d => typeof d === 'string' ? { id: d, type: 'FS' } : d);
+}
+
 // ── Schedule Computation ─────────────────────────────────────
 function computeSchedule(project) {
   const tasks = project.tasks;
@@ -98,13 +107,13 @@ function computeSchedule(project) {
   tasks.forEach(t => { byId[t.id] = t; });
 
   const inDeg = {};
-  const adj = {};
+  const adj = {}; // pred → [{succId, type}]
   tasks.forEach(t => { inDeg[t.id] = 0; adj[t.id] = []; });
 
   for (const t of tasks) {
-    for (const depId of (t.dependencies || [])) {
-      if (byId[depId]) {
-        adj[depId].push(t.id);
+    for (const dep of normalizeDeps(t.dependencies)) {
+      if (byId[dep.id]) {
+        adj[dep.id].push({ succId: t.id, type: dep.type });
         inDeg[t.id]++;
       }
     }
@@ -112,25 +121,33 @@ function computeSchedule(project) {
 
   const queue = tasks.filter(t => inDeg[t.id] === 0).map(t => t.id);
   const order = [];
-  const earlyEnd = {};
 
   while (queue.length) {
     const id = queue.shift();
     order.push(id);
-    for (const succ of adj[id]) {
-      if (--inDeg[succ] === 0) queue.push(succ);
+    for (const { succId } of adj[id]) {
+      if (--inDeg[succId] === 0) queue.push(succId);
     }
   }
 
   if (order.length !== tasks.length) return null; // cycle
 
   const earlyStart = {};
+  const earlyEnd = {};
   for (const id of order) {
     const t = byId[id];
-    const deps = (t.dependencies || []).filter(d => byId[d]);
-    const start = deps.length ? Math.max(...deps.map(d => earlyEnd[d] || 0)) : 0;
+    const dur = t.duration || 1;
+    const normDeps = normalizeDeps(t.dependencies).filter(d => byId[d.id]);
+    let start = 0;
+    if (normDeps.length) {
+      start = Math.max(0, Math.max(...normDeps.map(dep => {
+        if (dep.type === 'FF') return (earlyEnd[dep.id] || 0) - dur;
+        if (dep.type === 'SS') return earlyStart[dep.id] || 0;
+        return earlyEnd[dep.id] || 0; // FS (default)
+      })));
+    }
     earlyStart[id] = start;
-    earlyEnd[id] = start + (t.duration || 1);
+    earlyEnd[id] = start + dur;
   }
 
   const projectDuration = Math.max(...Object.values(earlyEnd));
@@ -138,9 +155,16 @@ function computeSchedule(project) {
   const lateStart = {};
 
   for (const id of [...order].reverse()) {
-    const successors = adj[id].filter(s => byId[s]);
-    lateEnd[id] = successors.length ? Math.min(...successors.map(s => lateStart[s])) : projectDuration;
-    lateStart[id] = lateEnd[id] - (byId[id].duration || 1);
+    const dur = byId[id].duration || 1;
+    let lateE = projectDuration;
+    for (const { succId, type } of adj[id]) {
+      if (!byId[succId]) continue;
+      if (type === 'FF') lateE = Math.min(lateE, lateEnd[succId]);
+      else if (type === 'SS') lateE = Math.min(lateE, lateStart[succId] + dur);
+      else lateE = Math.min(lateE, lateStart[succId]); // FS
+    }
+    lateEnd[id] = lateE;
+    lateStart[id] = lateE - dur;
   }
 
   const result = {};
@@ -200,7 +224,7 @@ function updateSaveIndicator() {
 // ── Project Operations ───────────────────────────────────────
 function newProject() {
   const today = new Date().toISOString().slice(0, 10);
-  const p = { id: uid(), name: 'New Project', startDate: today, teams: [], deliverables: [], taskGroups: [], tasks: [] };
+  const p = { id: uid(), name: 'New Project', startDate: today, streams: [], teams: [], deliverables: [], taskGroups: [], tasks: [] };
   state.projects.push(p);
   state.currentId = p.id;
   state.teamFilter = null;
@@ -295,6 +319,90 @@ function updateDeliverable(delivId, field, value) {
 }
 
 // ── TaskGroup (Task) Operations ───────────────────────────────
+// ── Streams ───────────────────────────────────────────────────
+function addStream() {
+  const p = currentProject(); if (!p) return;
+  if (!p.streams) p.streams = [];
+  const color = DEFAULT_TEAM_COLORS[p.streams.length % DEFAULT_TEAM_COLORS.length];
+  p.streams.push({ id: uid(), name: 'New Stream', color });
+  markDirty();
+  renderStreamsModal();
+  renderAll();
+}
+
+function deleteStream(streamId) {
+  const p = currentProject(); if (!p) return;
+  p.streams = (p.streams || []).filter(s => s.id !== streamId);
+  (p.deliverables || []).forEach(d => { if (d.streamId === streamId) d.streamId = null; });
+  markDirty();
+  renderStreamsModal();
+  renderAll();
+}
+
+function updateStream(streamId, field, value) {
+  const p = currentProject(); if (!p) return;
+  const s = (p.streams || []).find(s => s.id === streamId);
+  if (s) { s[field] = value; markDirty(); renderAll(); }
+}
+
+function openStreamsModal() {
+  document.getElementById('streams-overlay').classList.remove('hidden');
+  renderStreamsModal();
+}
+
+function closeStreamsModal() {
+  document.getElementById('streams-overlay').classList.add('hidden');
+}
+
+function renderStreamsModal() {
+  const p = currentProject();
+  const list = document.getElementById('streams-list');
+  list.innerHTML = '';
+  if (!p) return;
+
+  const streams = p.streams || [];
+  if (!streams.length) {
+    const empty = document.createElement('p');
+    empty.style.cssText = 'text-align:center;color:#aaa;font-size:13px;padding:20px';
+    empty.textContent = 'No streams yet. Add one below.';
+    list.appendChild(empty);
+    return;
+  }
+
+  streams.forEach(stream => {
+    const row = document.createElement('div');
+    row.className = 'team-row';
+
+    const colorBtn = document.createElement('button');
+    colorBtn.className = 'team-color-btn';
+    colorBtn.style.background = stream.color;
+    colorBtn.title = 'Change color';
+    colorBtn.addEventListener('click', () => {
+      const inp = document.createElement('input');
+      inp.type = 'color'; inp.value = stream.color; inp.style.display = 'none';
+      document.body.appendChild(inp); inp.click();
+      inp.addEventListener('input', () => { colorBtn.style.background = inp.value; updateStream(stream.id, 'color', inp.value); });
+      inp.addEventListener('change', () => document.body.removeChild(inp));
+    });
+
+    const nameInp = document.createElement('input');
+    nameInp.type = 'text'; nameInp.className = 'team-name-input'; nameInp.value = stream.name;
+    nameInp.addEventListener('change', () => updateStream(stream.id, 'name', nameInp.value));
+    nameInp.addEventListener('keydown', e => { if (e.key === 'Enter') nameInp.blur(); });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'team-del-btn'; delBtn.textContent = '×';
+    delBtn.title = 'Delete stream';
+    delBtn.addEventListener('click', () => showConfirm(
+      `Delete stream "${stream.name}"? Deliverables will become unassigned.`,
+      () => deleteStream(stream.id)
+    ));
+
+    row.appendChild(colorBtn); row.appendChild(nameInp); row.appendChild(delBtn);
+    list.appendChild(row);
+  });
+}
+
 function addTaskGroup(deliverableId, name) {
   const p = currentProject(); if (!p) return;
   if (!p.taskGroups) p.taskGroups = [];
@@ -321,7 +429,7 @@ function addTaskGroup(deliverableId, name) {
       groupId,
       activityType: def.type,
       duration: def.dur,
-      dependencies: i === 0 ? [] : [ids[i - 1]],
+      dependencies: i === 0 ? [] : [{ id: ids[i - 1], type: 'FS' }],
       teams: [],
       assignee: '',
       notes: '',
@@ -338,7 +446,7 @@ function deleteTaskGroup(groupId) {
   const taskIds = new Set(p.tasks.filter(t => t.groupId === groupId).map(t => t.id));
   p.taskGroups = (p.taskGroups || []).filter(g => g.id !== groupId);
   p.tasks = p.tasks.filter(t => t.groupId !== groupId);
-  p.tasks.forEach(t => { t.dependencies = (t.dependencies || []).filter(id => !taskIds.has(id)); });
+  p.tasks.forEach(t => { t.dependencies = normalizeDeps(t.dependencies).filter(d => !taskIds.has(d.id)); });
   markDirty();
   renderAll();
 }
@@ -388,6 +496,23 @@ function renderDeliverablesModal() {
     nameInp.type = 'text'; nameInp.className = 'team-name-input'; nameInp.value = deliv.name;
     nameInp.addEventListener('change', () => updateDeliverable(deliv.id, 'name', nameInp.value));
     nameInp.addEventListener('keydown', e => { if (e.key === 'Enter') nameInp.blur(); });
+
+    const streams = p.streams || [];
+    if (streams.length) {
+      const streamSel = document.createElement('select');
+      streamSel.className = 'stream-select';
+      const noneOpt = document.createElement('option');
+      noneOpt.value = ''; noneOpt.textContent = 'No stream';
+      streamSel.appendChild(noneOpt);
+      streams.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.id; opt.textContent = s.name;
+        if (deliv.streamId === s.id) opt.selected = true;
+        streamSel.appendChild(opt);
+      });
+      streamSel.addEventListener('change', () => updateDeliverable(deliv.id, 'streamId', streamSel.value || null));
+      row.appendChild(streamSel);
+    }
 
     const delBtn = document.createElement('button');
     delBtn.className = 'team-del-btn'; delBtn.textContent = '×';
@@ -581,7 +706,7 @@ function deleteTask(taskId) {
   const p = currentProject();
   if (!p) return;
   p.tasks = p.tasks.filter(t => t.id !== taskId);
-  p.tasks.forEach(t => { t.dependencies = (t.dependencies || []).filter(d => d !== taskId); });
+  p.tasks.forEach(t => { t.dependencies = normalizeDeps(t.dependencies).filter(d => d.id !== taskId); });
   markDirty();
   renderAll();
 }
@@ -619,7 +744,7 @@ function parseQuickAdd(raw) {
     const depMatch = part.match(/^dep(?:s|endenc(?:y|ies))?\s*[:=]\s*(.+)$/i);
     if (depMatch) {
       const nums = depMatch[1].split(/[\s,]+/).map(n => parseInt(n, 10)).filter(n => !isNaN(n) && n >= 1);
-      task.dependencies = nums.map(n => p.tasks[n - 1]?.id).filter(Boolean);
+      task.dependencies = nums.map(n => p.tasks[n - 1]?.id).filter(Boolean).map(id => ({ id, type: 'FS' }));
       continue;
     }
 
@@ -690,17 +815,20 @@ function renderToolbar() {
   const startEl = document.getElementById('project-start');
   const teamsBtn = document.getElementById('teams-btn');
 
+  const streamsBtn = document.getElementById('streams-btn');
   if (!p) {
     nameEl.value = ''; startEl.value = '';
     nameEl.disabled = startEl.disabled = true;
-    teamsBtn.disabled = true;
+    teamsBtn.disabled = streamsBtn.disabled = true;
     document.getElementById('deliverables-btn').disabled = true;
     return;
   }
-  nameEl.disabled = startEl.disabled = teamsBtn.disabled = false;
+  nameEl.disabled = startEl.disabled = teamsBtn.disabled = streamsBtn.disabled = false;
   nameEl.value = p.name;
   startEl.value = p.startDate || new Date().toISOString().slice(0, 10);
 
+  const streamCount = (p.streams || []).length;
+  streamsBtn.textContent = streamCount ? `Streams (${streamCount})` : 'Streams...';
   const teamCount = (p.teams || []).length;
   teamsBtn.textContent = teamCount ? `Teams (${teamCount})` : 'Teams...';
   const delivBtn = document.getElementById('deliverables-btn');
@@ -803,8 +931,8 @@ function renderTable() {
     tbody.appendChild(tr);
   }
 
-  // ── Deliverable sections ──
-  deliverables.forEach(deliv => {
+  // ── Helper: render one deliverable block ──
+  function renderDeliverableBlock(deliv, indented) {
     const dGroups = taskGroups.filter(g => g.deliverableId === deliv.id);
 
     // Deliverable header
@@ -813,6 +941,7 @@ function renderTable() {
     hTr.dataset.delivId = deliv.id;
     const hTd = document.createElement('td'); hTd.colSpan = 11;
     const hInner = document.createElement('div'); hInner.className = 'deliv-row-inner';
+    if (indented) hInner.style.paddingLeft = '28px';
     const dot = document.createElement('span'); dot.className = 'deliv-dot'; dot.style.background = deliv.color;
     const dName = document.createElement('span'); dName.className = 'deliv-name'; dName.textContent = deliv.name;
     const addBtn = document.createElement('button'); addBtn.className = 'add-task-btn'; addBtn.textContent = '+ Add Task';
@@ -848,12 +977,38 @@ function renderTable() {
     sTr.className = 'add-group-row'; sTr.dataset.delivId = deliv.id;
     const sTd = document.createElement('td'); sTd.colSpan = 11;
     sTr.appendChild(sTd); tbody.appendChild(sTr);
+  }
+
+  // ── Stream sections ──
+  const streams = p.streams || [];
+  const streamIds = new Set(streams.map(s => s.id));
+
+  streams.forEach(stream => {
+    const streamDelivs = deliverables.filter(d => d.streamId === stream.id);
+    if (!streamDelivs.length) return;
+
+    const sTr = document.createElement('tr');
+    sTr.className = 'stream-header-row';
+    const sTd = document.createElement('td'); sTd.colSpan = 11;
+    const sInner = document.createElement('div'); sInner.className = 'stream-row-inner';
+    sInner.style.borderLeft = `4px solid ${stream.color}`;
+    const sDot = document.createElement('span'); sDot.className = 'deliv-dot'; sDot.style.background = stream.color;
+    const sName = document.createElement('span'); sName.className = 'stream-row-name'; sName.textContent = stream.name;
+    sInner.appendChild(sDot); sInner.appendChild(sName);
+    sTd.appendChild(sInner); sTr.appendChild(sTd); tbody.appendChild(sTr);
+
+    streamDelivs.forEach(deliv => renderDeliverableBlock(deliv, true));
+  });
+
+  // ── Deliverables not assigned to any stream ──
+  deliverables.filter(d => !d.streamId || !streamIds.has(d.streamId)).forEach(deliv => {
+    renderDeliverableBlock(deliv, false);
   });
 
   // ── Ungrouped tasks (no deliverable) ──
   const ungrouped = p.tasks.filter(t => !t.deliverableId);
   if (ungrouped.length) {
-    if (deliverables.length) {
+    if (deliverables.length || streams.length) {
       const uTr = document.createElement('tr'); uTr.className = 'deliverable-header-row ungrouped-header';
       const uTd = document.createElement('td'); uTd.colSpan = 11;
       const uInner = document.createElement('div'); uInner.className = 'deliv-row-inner';
@@ -945,9 +1100,10 @@ function makeDepsCell(task, project) {
   const wrap = document.createElement('div');
   wrap.className = 'dep-chips-wrap';
 
-  // One chip per existing dependency
-  (task.dependencies || []).forEach(depId => {
-    const depTask = project.tasks.find(t => t.id === depId);
+  const normDeps = normalizeDeps(task.dependencies);
+
+  normDeps.forEach(dep => {
+    const depTask = project.tasks.find(t => t.id === dep.id);
     if (!depTask) return;
     const idx = project.tasks.indexOf(depTask);
 
@@ -958,17 +1114,34 @@ function makeDepsCell(task, project) {
     const num = document.createElement('span');
     num.textContent = idx + 1;
 
+    const typeBadge = document.createElement('span');
+    typeBadge.className = 'dep-type-badge';
+    typeBadge.textContent = dep.type || 'FS';
+    typeBadge.title = 'Click to change type (FS→FF→SS)';
+    typeBadge.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const deps = normalizeDeps(task.dependencies);
+      const d = deps.find(d => d.id === dep.id);
+      if (d) {
+        d.type = DEP_TYPES[(DEP_TYPES.indexOf(d.type) + 1) % DEP_TYPES.length];
+        task.dependencies = deps;
+        markDirty();
+        renderAll();
+      }
+    });
+
     const rm = document.createElement('button');
     rm.className = 'dep-chip-remove';
     rm.textContent = '×';
     rm.addEventListener('click', (e) => {
       e.stopPropagation();
-      task.dependencies = (task.dependencies || []).filter(id => id !== depId);
+      task.dependencies = normalizeDeps(task.dependencies).filter(d => d.id !== dep.id);
       markDirty();
       renderAll();
     });
 
     chip.appendChild(num);
+    chip.appendChild(typeBadge);
     chip.appendChild(rm);
     wrap.appendChild(chip);
   });
@@ -978,7 +1151,7 @@ function makeDepsCell(task, project) {
   if (others.length) {
     const addBtn = document.createElement('button');
     addBtn.className = 'dep-add-btn';
-    addBtn.textContent = task.dependencies?.length ? '+' : '+ dep';
+    addBtn.textContent = normDeps.length ? '+' : '+ dep';
     addBtn.title = 'Add dependency';
     addBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1156,16 +1329,57 @@ function renderGantt() {
   const taskIndexMap = {};
   p.tasks.forEach((t, i) => { taskIndexMap[t.id] = i + 1; });
 
+  const streams = p.streams || [];
+  const streamIds = new Set(streams.map(s => s.id));
   const rows = [];
-  deliverables.forEach(deliv => {
+
+  // Streams → their deliverables → tasks
+  streams.forEach(stream => {
+    const streamDelivs = deliverables.filter(d => d.streamId === stream.id);
+    const allStreamTasks = p.tasks.filter(t => streamDelivs.some(d => d.id === t.deliverableId));
+    if (!streamDelivs.length && !allStreamTasks.length) return;
+    const streamCollapsed = collapsedStreams.has(stream.id);
+    rows.push({ type: 'stream-header', stream, allStreamTasks, collapsed: streamCollapsed });
+    if (!streamCollapsed) {
+      streamDelivs.forEach(deliv => {
+        const delivTasks = p.tasks.filter(t => t.deliverableId === deliv.id);
+        if (!delivTasks.length) return;
+        const delivCollapsed = collapsedDeliverables.has(deliv.id);
+        rows.push({ type: 'deliv-header', deliv, delivTasks, collapsed: delivCollapsed, withinStream: true });
+        if (!delivCollapsed) {
+          (p.taskGroups || []).filter(g => g.deliverableId === deliv.id).forEach(group => {
+            const gTasks = delivTasks.filter(t => t.groupId === group.id)
+              .sort((a, b) => actTypeOrder(a.activityType) - actTypeOrder(b.activityType));
+            if (!gTasks.length) return;
+            const groupCollapsed = collapsedGroups.has(group.id);
+            rows.push({ type: 'group-header', group, gTasks, collapsed: groupCollapsed });
+            if (!groupCollapsed) gTasks.forEach(t => rows.push({ type: 'task', task: t }));
+          });
+          delivTasks.filter(t => !t.groupId).forEach(t => rows.push({ type: 'task', task: t }));
+        }
+      });
+    }
+  });
+
+  // Deliverables not assigned to any stream
+  deliverables.filter(d => !d.streamId || !streamIds.has(d.streamId)).forEach(deliv => {
     const delivTasks = p.tasks.filter(t => t.deliverableId === deliv.id);
     if (!delivTasks.length) return;
     const collapsed = collapsedDeliverables.has(deliv.id);
     rows.push({ type: 'deliv-header', deliv, delivTasks, collapsed });
     if (!collapsed) {
-      delivTasks.forEach(task => rows.push({ type: 'task', task }));
+      (p.taskGroups || []).filter(g => g.deliverableId === deliv.id).forEach(group => {
+        const gTasks = delivTasks.filter(t => t.groupId === group.id)
+          .sort((a, b) => actTypeOrder(a.activityType) - actTypeOrder(b.activityType));
+        if (!gTasks.length) return;
+        const groupCollapsed = collapsedGroups.has(group.id);
+        rows.push({ type: 'group-header', group, gTasks, collapsed: groupCollapsed });
+        if (!groupCollapsed) gTasks.forEach(t => rows.push({ type: 'task', task: t }));
+      });
+      delivTasks.filter(t => !t.groupId).forEach(t => rows.push({ type: 'task', task: t }));
     }
   });
+
   p.tasks.filter(t => !t.deliverableId).forEach(task => rows.push({ type: 'task', task }));
 
   const startDate = p.startDate ? new Date(p.startDate) : new Date();
@@ -1199,14 +1413,21 @@ function renderGantt() {
   const swimG = makeSVGEl('g');
   rows.forEach((row, i) => {
     const rowY = GANTT_HEADER_H + i * ROW_H;
-    if (row.type === 'deliv-header') {
-      swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: ROW_H, fill: row.deliv.color + '22' }));
-      swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: 3, height: ROW_H, fill: row.deliv.color }));
-    } else if (row.task.deliverableId) {
+    if (row.type === 'stream-header') {
+      swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: ROW_H, fill: row.stream.color + '20' }));
+      swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: 4, height: ROW_H, fill: row.stream.color }));
+    } else if (row.type === 'deliv-header') {
+      const indent = row.withinStream ? 14 : 0;
+      swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: ROW_H, fill: row.deliv.color + '1a' }));
+      swimG.appendChild(makeSVGEl('rect', { x: indent, y: rowY, width: 3, height: ROW_H, fill: row.deliv.color }));
+    } else if (row.type === 'group-header') {
+      swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: ROW_H, fill: '#f1f3f5' }));
+    } else if (row.task && row.task.deliverableId) {
       const deliv = deliverables.find(d => d.id === row.task.deliverableId);
       if (deliv) {
-        swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: ROW_H, fill: deliv.color + '0d' }));
-        swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: 3, height: ROW_H, fill: deliv.color }));
+        const indent = (deliv.streamId && streamIds.has(deliv.streamId)) ? 14 : 0;
+        swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: ROW_H, fill: deliv.color + '0a' }));
+        swimG.appendChild(makeSVGEl('rect', { x: indent, y: rowY, width: 3, height: ROW_H, fill: deliv.color }));
       }
     }
   });
@@ -1250,7 +1471,59 @@ function renderGantt() {
   rows.forEach((row, rowIdx) => {
     const rowY = GANTT_HEADER_H + rowIdx * ROW_H;
 
-    if (row.type === 'deliv-header') {
+    if (row.type === 'stream-header') {
+      const { stream, allStreamTasks, collapsed } = row;
+
+      // Summary bar spanning full stream range
+      const scheduled = allStreamTasks.filter(t => schedule[t.id]);
+      if (scheduled.length) {
+        const minStart = Math.min(...scheduled.map(t => schedule[t.id].startDay));
+        const maxEnd   = Math.max(...scheduled.map(t => schedule[t.id].endDay));
+        const x = minStart * dayW;
+        const w = Math.max((maxEnd - minStart + 1) * dayW, 4);
+        const y = rowY + BAR_TOP;
+        const bar = makeSVGEl('rect', { x, y, width: w, height: BAR_H,
+          fill: stream.color, rx: 4, ry: 4, opacity: collapsed ? 0.65 : 0.18 });
+        barsG.appendChild(bar);
+        if (collapsed && w > 50) {
+          const lbl = makeSVGEl('text', { x: x + 7, y: y + BAR_H / 2 + 4,
+            fill: '#fff', 'font-size': 11, 'font-weight': 700 });
+          lbl.textContent = truncate(stream.name + ' (' + scheduled.length + ')', Math.floor(w / 7));
+          barsG.appendChild(lbl);
+        }
+      }
+
+      // Label panel stream header row
+      const streamRow = document.createElement('div');
+      streamRow.className = 'gantt-stream-header-row';
+      streamRow.style.borderLeft = `4px solid ${stream.color}`;
+      streamRow.style.background = stream.color + '1a';
+
+      const sToggle = document.createElement('span');
+      sToggle.className = 'gantt-deliv-toggle';
+      sToggle.textContent = collapsed ? '▶' : '▼';
+
+      const sName = document.createElement('span');
+      sName.className = 'gantt-stream-header-name';
+      sName.textContent = stream.name;
+
+      const sCount = document.createElement('span');
+      sCount.className = 'gantt-deliv-header-count';
+      sCount.textContent = allStreamTasks.length + (allStreamTasks.length === 1 ? ' task' : ' tasks');
+
+      streamRow.appendChild(sToggle);
+      streamRow.appendChild(sName);
+      streamRow.appendChild(sCount);
+
+      streamRow.addEventListener('click', () => {
+        if (collapsedStreams.has(stream.id)) collapsedStreams.delete(stream.id);
+        else collapsedStreams.add(stream.id);
+        renderGantt();
+      });
+
+      labelsBody.appendChild(streamRow);
+
+    } else if (row.type === 'deliv-header') {
       const { deliv, delivTasks, collapsed } = row;
 
       // Summary bar spanning the full deliverable date range (shown when collapsed;
@@ -1275,7 +1548,7 @@ function renderGantt() {
 
       // Label panel header row
       const headerRow = document.createElement('div');
-      headerRow.className = 'gantt-deliv-header-row';
+      headerRow.className = 'gantt-deliv-header-row' + (row.withinStream ? ' within-stream' : '');
       headerRow.style.borderLeft = `3px solid ${deliv.color}`;
       headerRow.style.background = deliv.color + '18';
 
@@ -1302,6 +1575,55 @@ function renderGantt() {
       });
 
       labelsBody.appendChild(headerRow);
+
+    } else if (row.type === 'group-header') {
+      const { group, gTasks, collapsed } = row;
+
+      // Summary bar for collapsed group
+      const scheduled = gTasks.filter(t => schedule[t.id]);
+      if (scheduled.length) {
+        const minStart = Math.min(...scheduled.map(t => schedule[t.id].startDay));
+        const maxEnd   = Math.max(...scheduled.map(t => schedule[t.id].endDay));
+        const x = minStart * dayW;
+        const w = Math.max((maxEnd - minStart + 1) * dayW, 4);
+        const y = rowY + BAR_TOP;
+        const bar = makeSVGEl('rect', { x, y, width: w, height: BAR_H,
+          fill: '#6b7280', rx: 4, ry: 4, opacity: collapsed ? 0.55 : 0.15 });
+        barsG.appendChild(bar);
+        if (collapsed && w > 40) {
+          const lbl = makeSVGEl('text', { x: x + 7, y: y + BAR_H / 2 + 4,
+            fill: '#fff', 'font-size': 11, 'font-weight': 600 });
+          lbl.textContent = truncate(group.name + ' (' + scheduled.length + ')', Math.floor(w / 7));
+          barsG.appendChild(lbl);
+        }
+      }
+
+      const groupRow = document.createElement('div');
+      groupRow.className = 'gantt-group-header-row';
+
+      const gToggle = document.createElement('span');
+      gToggle.className = 'gantt-deliv-toggle';
+      gToggle.textContent = collapsed ? '▶' : '▼';
+
+      const gName = document.createElement('span');
+      gName.className = 'gantt-group-header-name';
+      gName.textContent = group.name;
+
+      const gCount = document.createElement('span');
+      gCount.className = 'gantt-deliv-header-count';
+      gCount.textContent = gTasks.length + (gTasks.length === 1 ? ' activity' : ' activities');
+
+      groupRow.appendChild(gToggle);
+      groupRow.appendChild(gName);
+      groupRow.appendChild(gCount);
+
+      groupRow.addEventListener('click', () => {
+        if (collapsedGroups.has(group.id)) collapsedGroups.delete(group.id);
+        else collapsedGroups.add(group.id);
+        renderGantt();
+      });
+
+      labelsBody.appendChild(groupRow);
 
     } else {
       // Task row
@@ -1365,11 +1687,17 @@ function renderGantt() {
   p.tasks.forEach(task => {
     const succ = barPositions[task.id];
     if (!succ) return;
-    for (const depId of (task.dependencies || [])) {
-      const pred = barPositions[depId];
-      if (!pred) continue;
-      drawArrow(arrowsG, pred.x + pred.w, pred.y, succ.x, succ.y, dayW);
-    }
+    normalizeDeps(task.dependencies).forEach(dep => {
+      const pred = barPositions[dep.id];
+      if (!pred) return;
+      if (dep.type === 'FF') {
+        drawArrow(arrowsG, pred.x + pred.w, pred.y, succ.x + succ.w, succ.y, dayW);
+      } else if (dep.type === 'SS') {
+        drawArrow(arrowsG, pred.x, pred.y, succ.x, succ.y, dayW);
+      } else {
+        drawArrow(arrowsG, pred.x + pred.w, pred.y, succ.x, succ.y, dayW);
+      }
+    });
   });
   svg.appendChild(arrowsG);
 
@@ -1535,7 +1863,7 @@ function autoLayoutCanvas(p) {
     if (levels[id] !== undefined) return levels[id];
     if (visiting.has(id)) return 0; // cycle guard
     visiting.add(id);
-    const deps = (byId[id]?.dependencies || []).filter(d => byId[d]);
+    const deps = normalizeDeps(byId[id]?.dependencies).map(d => d.id).filter(d => byId[d]);
     levels[id] = deps.length ? Math.max(...deps.map(d => getLevel(d, visiting))) + 1 : 0;
     return levels[id];
   }
@@ -1675,6 +2003,16 @@ function makeCanvasCard(task, p, schedule, arrowsSvg) {
   const body = document.createElement('div');
   body.className = 'canvas-card-body';
 
+  // Context label (deliverable / group)
+  const deliv = task.deliverableId ? (p.deliverables || []).find(d => d.id === task.deliverableId) : null;
+  const grp = task.groupId ? (p.taskGroups || []).find(g => g.id === task.groupId) : null;
+  if (deliv || grp) {
+    const ctx = document.createElement('div');
+    ctx.className = 'canvas-card-context';
+    ctx.textContent = grp && deliv ? deliv.name + ' / ' + grp.name : deliv ? deliv.name : grp.name;
+    body.appendChild(ctx);
+  }
+
   const nameEl = document.createElement('div');
   nameEl.className = 'canvas-card-name';
   nameEl.textContent = task.name;
@@ -1756,13 +2094,33 @@ function drawCanvasArrows(svg, p, byId) {
   p.tasks.forEach(task => {
     const toX = task.canvasX || 0;
     const toY = (task.canvasY || 0) + CARD_H / 2;
-    (task.dependencies || []).forEach(depId => {
-      const dep = byId[depId];
+    normalizeDeps(task.dependencies).forEach(depObj => {
+      const dep = byId[depObj.id];
       if (!dep) return;
       const fromX = (dep.canvasX || 0) + CARD_W;
       const fromY = (dep.canvasY || 0) + CARD_H / 2;
-      const isCrit = false; // could check schedule here if needed
       svg.appendChild(canvasBezier(fromX, fromY, toX, toY));
+      // Type label — clickable to cycle FS→FF→SS
+      const type = depObj.type || 'FS';
+      const mx = fromX + (toX - fromX) * 0.45;
+      const my = fromY + (toY - fromY) * 0.45 - 6;
+      const pill = makeSVGEl('g', { style: 'cursor:pointer' });
+      pill.appendChild(makeSVGEl('rect', { x: mx - 10, y: my - 8, width: 20, height: 13, rx: 3, fill: '#fff', stroke: '#cbd5e1', 'stroke-width': 1 }));
+      const lbl = makeSVGEl('text', { x: mx, y: my + 2, 'text-anchor': 'middle', 'font-size': 8, fill: '#64748b', 'font-weight': 700 });
+      lbl.textContent = type;
+      pill.appendChild(lbl);
+      pill.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const deps = normalizeDeps(task.dependencies);
+        const d = deps.find(d => d.id === depObj.id);
+        if (d) {
+          d.type = DEP_TYPES[(DEP_TYPES.indexOf(d.type) + 1) % DEP_TYPES.length];
+          task.dependencies = deps;
+          markDirty();
+          drawCanvasArrows(svg, p, byId);
+        }
+      });
+      svg.appendChild(pill);
     });
   });
 }
@@ -1883,8 +2241,8 @@ function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
           showToast('Cannot link — would create a cycle');
         } else {
           const t = byId[targetId];
-          if (t && !(t.dependencies || []).includes(taskId)) {
-            t.dependencies = [...(t.dependencies || []), taskId];
+          if (t && !normalizeDeps(t.dependencies).some(d => d.id === taskId)) {
+            t.dependencies = [...normalizeDeps(t.dependencies), { id: taskId, type: 'FS' }];
             markDirty();
             drawCanvasArrows(arrowsSvg, p, byId);
           }
@@ -1946,7 +2304,8 @@ function openDepPopover(taskId, anchorEl) {
   closeTeamPopover();
 
   const task = p.tasks.find(t => t.id === taskId);
-  const currentDeps = new Set(task?.dependencies || []);
+  const normDeps = normalizeDeps(task?.dependencies);
+  const currentDepMap = new Map(normDeps.map(d => [d.id, d.type])); // id → type
   const inner = document.getElementById('dep-popover-inner');
   inner.innerHTML = '';
 
@@ -1954,6 +2313,9 @@ function openDepPopover(taskId, anchorEl) {
   title.className = 'team-popover-title';
   title.textContent = 'Depends on';
   inner.appendChild(title);
+
+  const delivMap = Object.fromEntries((p.deliverables || []).map(d => [d.id, d]));
+  const groupMap = Object.fromEntries((p.taskGroups || []).map(g => [g.id, g]));
 
   const others = p.tasks.filter(t => t.id !== taskId);
   if (!others.length) {
@@ -1964,7 +2326,8 @@ function openDepPopover(taskId, anchorEl) {
   } else {
     others.forEach(t => {
       const idx = p.tasks.indexOf(t);
-      const cyclic = !currentDeps.has(t.id) && wouldCreateCycle(p, t.id, taskId);
+      const isChecked = currentDepMap.has(t.id);
+      const cyclic = !isChecked && wouldCreateCycle(p, t.id, taskId);
 
       const opt = document.createElement('label');
       opt.className = 'team-option';
@@ -1972,18 +2335,18 @@ function openDepPopover(taskId, anchorEl) {
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = currentDeps.has(t.id);
+      cb.checked = isChecked;
       cb.disabled = cyclic;
       cb.addEventListener('change', () => {
         const tk = p.tasks.find(tk => tk.id === taskId);
         if (cb.checked) {
-          tk.dependencies = [...(tk.dependencies || []), t.id];
+          tk.dependencies = [...normalizeDeps(tk.dependencies), { id: t.id, type: 'FS' }];
         } else {
-          tk.dependencies = (tk.dependencies || []).filter(id => id !== t.id);
+          tk.dependencies = normalizeDeps(tk.dependencies).filter(d => d.id !== t.id);
         }
         markDirty();
         renderAll();
-        openDepPopover(taskId, anchorEl); // re-render popover in place
+        openDepPopover(taskId, anchorEl);
       });
 
       const numSpan = document.createElement('span');
@@ -1998,6 +2361,42 @@ function openDepPopover(taskId, anchorEl) {
       opt.appendChild(numSpan);
       opt.appendChild(nameSpan);
 
+      // Context label: deliverable / group
+      const deliv = t.deliverableId ? delivMap[t.deliverableId] : null;
+      const group = t.groupId ? groupMap[t.groupId] : null;
+      const ctxText = group && deliv ? deliv.name + ' / ' + group.name
+                    : deliv ? deliv.name
+                    : group ? group.name : '';
+      if (ctxText) {
+        const ctx = document.createElement('span');
+        ctx.className = 'dep-popover-context';
+        ctx.textContent = ctxText;
+        opt.appendChild(ctx);
+      }
+
+      // Type cycling badge (shown when checked)
+      if (isChecked) {
+        const typeBadge = document.createElement('span');
+        typeBadge.className = 'dep-type-inline';
+        typeBadge.textContent = currentDepMap.get(t.id) || 'FS';
+        typeBadge.title = 'Click to cycle type (FS→FF→SS)';
+        typeBadge.addEventListener('click', (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const tk = p.tasks.find(tk => tk.id === taskId);
+          if (!tk) return;
+          const deps = normalizeDeps(tk.dependencies);
+          const d = deps.find(d => d.id === t.id);
+          if (d) {
+            d.type = DEP_TYPES[(DEP_TYPES.indexOf(d.type) + 1) % DEP_TYPES.length];
+            tk.dependencies = deps;
+            markDirty();
+            renderAll();
+            openDepPopover(taskId, anchorEl);
+          }
+        });
+        opt.appendChild(typeBadge);
+      }
+
       if (cyclic) {
         const note = document.createElement('span');
         note.style.cssText = 'font-size:10px;color:#bbb;flex-shrink:0;margin-left:4px';
@@ -2011,7 +2410,7 @@ function openDepPopover(taskId, anchorEl) {
   const popover = document.getElementById('dep-popover');
   popover.classList.remove('hidden');
   const rect = anchorEl.getBoundingClientRect();
-  const pw = 240;
+  const pw = 280;
   let left = rect.left;
   let top = rect.bottom + 4;
   if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
@@ -2034,7 +2433,7 @@ function wouldCreateCycle(p, newDepId, taskId) {
     if (id === taskId) return true;
     if (visited.has(id)) return false;
     visited.add(id);
-    return (byId[id]?.dependencies || []).some(d => reaches(d));
+    return normalizeDeps(byId[id]?.dependencies).some(d => reaches(d.id));
   }
   return reaches(newDepId);
 }
@@ -2104,8 +2503,8 @@ function setupGanttDragConnect(svg, barPositions, p) {
         showToast('Cannot create dependency — would form a cycle');
       } else {
         const t = p.tasks.find(t => t.id === task.id);
-        if (t && !(t.dependencies || []).includes(dragDep.fromId)) {
-          t.dependencies = [...(t.dependencies || []), dragDep.fromId];
+        if (t && !normalizeDeps(t.dependencies).some(d => d.id === dragDep.fromId)) {
+          t.dependencies = [...normalizeDeps(t.dependencies), { id: dragDep.fromId, type: 'FS' }];
           markDirty();
           renderAll();
           return; // renderAll calls renderGantt which does cleanup
@@ -2197,6 +2596,14 @@ function wireEvents() {
     });
   });
 
+  // Streams button
+  document.getElementById('streams-btn').addEventListener('click', openStreamsModal);
+  document.getElementById('streams-modal-close').addEventListener('click', closeStreamsModal);
+  document.getElementById('streams-overlay').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('streams-overlay')) closeStreamsModal();
+  });
+  document.getElementById('add-stream-btn').addEventListener('click', addStream);
+
   // Teams button
   document.getElementById('teams-btn').addEventListener('click', openTeamsModal);
   document.getElementById('teams-modal-close').addEventListener('click', closeTeamsModal);
@@ -2253,7 +2660,7 @@ function wireEvents() {
 
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveData(); }
-    if (e.key === 'Escape') { closeTeamPopover(); closeTeamsModal(); closeDepPopover(); closeDeliverablesModal(); }
+    if (e.key === 'Escape') { closeTeamPopover(); closeTeamsModal(); closeDepPopover(); closeDeliverablesModal(); closeStreamsModal(); }
   });
 
   document.getElementById('canvas-auto-layout-btn').addEventListener('click', () => {
