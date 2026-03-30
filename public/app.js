@@ -192,12 +192,21 @@ function upgradeData() {
   state.projects.forEach(p => {
     (p.activities || []).forEach(a => {
       if (a.fte == null) { a.fte = 1; changed = true; }
+      if (!('teamId' in a)) { a.teamId = null; changed = true; }
     });
     (p.tasks || []).forEach(t => {
       if (t.effort == null) { t.effort = t.duration || 1; changed = true; }
     });
   });
   if (changed) markDirty();
+}
+
+// Returns the de-duplicated effective teams for a task:
+// activity primary team + task extra teams
+function taskEffectiveTeams(task, project) {
+  const act = task.activityId ? (project.activities || []).find(a => a.id === task.activityId) : null;
+  const ids = [...(act?.teamId ? [act.teamId] : []), ...(task.teams || [])];
+  return [...new Set(ids)];
 }
 
 async function loadData() {
@@ -449,7 +458,7 @@ function addActivity(deliverableId, name, templateId) {
   const p = currentProject(); if (!p) return;
   if (!p.activities) p.activities = [];
   const activityId = uid();
-  p.activities.push({ id: activityId, name, deliverableId, fte: 1 });
+  p.activities.push({ id: activityId, name, deliverableId, fte: 1, teamId: null });
 
   const tmpl = templateId ? state.templates.find(t => t.id === templateId) : null;
   if (tmpl && tmpl.tasks && tmpl.tasks.length) {
@@ -714,6 +723,95 @@ function openTeamPopover(taskId, anchorEl) {
 function closeTeamPopover() {
   document.getElementById('team-popover').classList.add('hidden');
   activePopoverTaskId = null;
+}
+
+// ── Activity Team Popover (single-select) ─────────────────────
+let activePopoverActivityId = null;
+
+function openActivityTeamPopover(activityId, anchorEl) {
+  const p = currentProject();
+  if (!p) return;
+  closeTeamPopover();
+  closeActivityTeamPopover();
+  activePopoverActivityId = activityId;
+
+  const activity = (p.activities || []).find(a => a.id === activityId);
+  const teams = p.teams || [];
+
+  const popover = document.getElementById('team-popover');
+  const inner = document.getElementById('team-popover-inner');
+  inner.innerHTML = '';
+
+  const title = document.createElement('div');
+  title.className = 'team-popover-title';
+  title.textContent = teams.length ? 'Activity team' : 'No teams defined';
+  inner.appendChild(title);
+
+  // "None" option
+  const noneOpt = document.createElement('label');
+  noneOpt.className = 'team-option';
+  const noneCb = document.createElement('input');
+  noneCb.type = 'radio'; noneCb.name = 'activity-team'; noneCb.value = '';
+  noneCb.checked = !activity?.teamId;
+  noneCb.addEventListener('change', () => {
+    if (!activity) return;
+    activity.teamId = null;
+    markDirty(); renderAll();
+    openActivityTeamPopover(activityId, anchorEl);
+  });
+  const noneLabel = document.createElement('span');
+  noneLabel.className = 'team-option-name';
+  noneLabel.textContent = '— None';
+  noneOpt.appendChild(noneCb); noneOpt.appendChild(noneLabel);
+  inner.appendChild(noneOpt);
+
+  teams.forEach(team => {
+    const opt = document.createElement('label');
+    opt.className = 'team-option';
+    const rb = document.createElement('input');
+    rb.type = 'radio'; rb.name = 'activity-team'; rb.value = team.id;
+    rb.checked = activity?.teamId === team.id;
+    rb.addEventListener('change', () => {
+      if (!activity) return;
+      activity.teamId = team.id;
+      markDirty(); renderAll();
+      openActivityTeamPopover(activityId, anchorEl);
+    });
+    const swatch = document.createElement('span');
+    swatch.className = 'team-option-swatch';
+    swatch.style.background = team.color;
+    const name = document.createElement('span');
+    name.className = 'team-option-name';
+    name.textContent = team.name;
+    opt.appendChild(rb); opt.appendChild(swatch); opt.appendChild(name);
+    inner.appendChild(opt);
+  });
+
+  if (teams.length === 0) {
+    const footer = document.createElement('div');
+    footer.className = 'team-popover-footer';
+    const link = document.createElement('a');
+    link.textContent = 'Define teams first →';
+    link.addEventListener('click', () => { closeActivityTeamPopover(); openTeamsModal(); });
+    footer.appendChild(link);
+    inner.appendChild(footer);
+  }
+
+  popover.classList.remove('hidden');
+  const rect = anchorEl.getBoundingClientRect();
+  const pw = popover.offsetWidth || 220;
+  const ph = popover.offsetHeight || 160;
+  let left = rect.left;
+  let top = rect.bottom + 4;
+  if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+  if (top + ph > window.innerHeight - 8) top = rect.top - ph - 4;
+  popover.style.left = left + 'px';
+  popover.style.top = top + 'px';
+}
+
+function closeActivityTeamPopover() {
+  document.getElementById('team-popover').classList.add('hidden');
+  activePopoverActivityId = null;
 }
 
 // ── Task Operations ──────────────────────────────────────────
@@ -1021,10 +1119,25 @@ function renderTable() {
       });
       fteLbl.appendChild(fteInp);
 
+      // Team badge (single primary team for this activity)
+      const actTeam = activity.teamId ? (p.teams || []).find(t => t.id === activity.teamId) : null;
+      const aTeamBadge = document.createElement('span');
+      aTeamBadge.className = 'activity-team-badge' + (actTeam ? ' assigned' : '');
+      if (actTeam) {
+        aTeamBadge.style.background = actTeam.color + '22';
+        aTeamBadge.style.color = actTeam.color;
+        aTeamBadge.style.borderColor = actTeam.color + '55';
+        aTeamBadge.textContent = actTeam.name;
+      } else {
+        aTeamBadge.textContent = '+ team';
+      }
+      aTeamBadge.title = 'Set activity team';
+      aTeamBadge.addEventListener('click', e => { e.stopPropagation(); openActivityTeamPopover(activity.id, aTeamBadge); });
+
       const aDel = document.createElement('button'); aDel.className = 'activity-del-btn'; aDel.textContent = '×';
       aDel.title = `Delete activity "${activity.name}"`;
       aDel.addEventListener('click', () => showConfirm(`Delete activity "${activity.name}" and all its tasks?`, () => deleteActivity(activity.id)));
-      aInner.appendChild(aName); aInner.appendChild(aEffort); aInner.appendChild(fteLbl); aInner.appendChild(aDel);
+      aInner.appendChild(aName); aInner.appendChild(aEffort); aInner.appendChild(aTeamBadge); aInner.appendChild(fteLbl); aInner.appendChild(aDel);
       aTd.appendChild(aInner); aTr.appendChild(aTd); tbody.appendChild(aTr);
 
       aTasks.forEach(t => appendTaskRow(t, true));
@@ -1251,7 +1364,7 @@ function makeTeamsCell(task, project) {
   if (assignedTeams.length === 0) {
     const placeholder = document.createElement('span');
     placeholder.className = 'team-placeholder';
-    placeholder.textContent = teams.length ? '+ assign' : '+ team';
+    placeholder.textContent = '+ extra';
     wrap.appendChild(placeholder);
   } else {
     assignedTeams.forEach(team => {
@@ -1335,7 +1448,7 @@ function openColorPicker(taskId, swatchEl) {
 function getBarFill(task, defs) {
   const p = currentProject();
   const teams = p?.teams || [];
-  const taskTeams = (task.teams || []).map(id => teams.find(t => t.id === id)).filter(Boolean);
+  const taskTeams = taskEffectiveTeams(task, p).map(id => teams.find(t => t.id === id)).filter(Boolean);
 
   if (taskTeams.length === 0) return { fill: task.color, opacity: 0.9 };
   if (taskTeams.length === 1) return { fill: taskTeams[0].color, opacity: 1 };
@@ -1362,7 +1475,8 @@ function getBarFill(task, defs) {
 
 function isTaskDimmed(task) {
   if (!state.teamFilter) return false;
-  return !(task.teams || []).includes(state.teamFilter);
+  const p = currentProject();
+  return !taskEffectiveTeams(task, p).includes(state.teamFilter);
 }
 
 // ── Gantt Tooltip ────────────────────────────────────────────
@@ -1719,6 +1833,15 @@ function renderGantt() {
       actRow.appendChild(aName);
       actRow.appendChild(aCount);
 
+      const actTeam = activity.teamId ? (p.teams || []).find(t => t.id === activity.teamId) : null;
+      if (actTeam) {
+        const teamBadge = document.createElement('span');
+        teamBadge.className = 'gantt-activity-team-badge';
+        teamBadge.style.cssText = `background:${actTeam.color}22;color:${actTeam.color};border-color:${actTeam.color}55`;
+        teamBadge.textContent = actTeam.name;
+        actRow.appendChild(teamBadge);
+      }
+
       const actFte = activity.fte || 1;
       if (actFte !== 1) {
         const fteBadge = document.createElement('span');
@@ -1921,7 +2044,7 @@ function renderHistogram(p, schedule, dayW, maxDay) {
     const act = task.activityId ? activities.find(a => a.id === task.activityId) : null;
     const fte = act?.fte || 1;
     const effort = task.effort ?? task.duration ?? 1;
-    const taskTeams = (task.teams || []).filter(id => teamIds.includes(id));
+    const taskTeams = taskEffectiveTeams(task, p).filter(id => teamIds.includes(id));
     const ftePerTeam = taskTeams.length ? fte / taskTeams.length : fte;
     const assignees = taskTeams.length ? taskTeams : [UNASSIGNED];
 
@@ -2249,7 +2372,7 @@ function renderCanvas() {
 function makeCanvasCard(task, p, schedule, arrowsSvg) {
   const s = schedule && schedule[task.id];
   const teams = p.teams || [];
-  const taskTeams = (task.teams || []).map(id => teams.find(t => t.id === id)).filter(Boolean);
+  const taskTeams = taskEffectiveTeams(task, p).map(id => teams.find(t => t.id === id)).filter(Boolean);
   const isCritical = !!(s && s.isCritical);
 
   const card = document.createElement('div');
@@ -3119,8 +3242,10 @@ function wireEvents() {
   // Close popovers on outside click
   document.addEventListener('click', (e) => {
     const teamPop = document.getElementById('team-popover');
-    if (!teamPop.classList.contains('hidden') && !teamPop.contains(e.target) && !e.target.closest('.teams-cell')) {
+    if (!teamPop.classList.contains('hidden') && !teamPop.contains(e.target)
+        && !e.target.closest('.teams-cell') && !e.target.closest('.activity-team-badge')) {
       closeTeamPopover();
+      closeActivityTeamPopover();
     }
     const depPop = document.getElementById('dep-popover');
     if (!depPop.classList.contains('hidden') && !depPop.contains(e.target) && !e.target.closest('.deps-cell')) {
@@ -3156,7 +3281,7 @@ function wireEvents() {
 
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveData(); }
-    if (e.key === 'Escape') { closeTeamPopover(); closeTeamsModal(); closeDepPopover(); closeDeliverablesModal(); closeStreamsModal(); closeTemplatesModal(); }
+    if (e.key === 'Escape') { closeTeamPopover(); closeActivityTeamPopover(); closeTeamsModal(); closeDepPopover(); closeDeliverablesModal(); closeStreamsModal(); closeTemplatesModal(); }
   });
 
   document.getElementById('canvas-auto-layout-btn').addEventListener('click', () => {

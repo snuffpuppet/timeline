@@ -1334,6 +1334,16 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   flex-shrink: 0;
 }
 
+.gantt-activity-team-badge {
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 10px;
+  border: 1px solid;
+  padding: 1px 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .gantt-fte-badge {
   font-size: 10px;
   font-family: 'DM Mono', monospace;
@@ -1600,6 +1610,25 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 }
 .activity-header-row:hover .activity-del-btn { opacity: 1; }
 .activity-del-btn:hover { background: #fee2e2; color: var(--danger); }
+
+.activity-team-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-4);
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: border-color .15s, background .15s;
+}
+.activity-team-badge:hover { border-color: var(--text-4); }
+.activity-team-badge.assigned { font-weight: 600; }
 
 .activity-effort-label {
   font-size: 11px;
