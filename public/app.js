@@ -100,6 +100,13 @@ function normalizeDeps(deps) {
 }
 
 // ── Schedule Computation ─────────────────────────────────────
+function taskCalDays(task, project) {
+  const act = task.activityId ? (project.activities || []).find(a => a.id === task.activityId) : null;
+  const fte = act?.fte || 1;
+  const effort = task.effort ?? task.duration ?? 1;
+  return Math.max(1, Math.ceil(effort / fte));
+}
+
 function computeSchedule(project) {
   const tasks = project.tasks;
   if (!tasks.length) return {};
@@ -137,7 +144,7 @@ function computeSchedule(project) {
   const earlyEnd = {};
   for (const id of order) {
     const t = byId[id];
-    const dur = t.duration || 1;
+    const dur = taskCalDays(t, project);
     const normDeps = normalizeDeps(t.dependencies).filter(d => byId[d.id]);
     let start = 0;
     if (normDeps.length) {
@@ -156,7 +163,7 @@ function computeSchedule(project) {
   const lateStart = {};
 
   for (const id of [...order].reverse()) {
-    const dur = byId[id].duration || 1;
+    const dur = taskCalDays(byId[id], project);
     let lateE = projectDuration;
     for (const { succId, type } of adj[id]) {
       if (!byId[succId]) continue;
@@ -428,7 +435,7 @@ function addActivity(deliverableId, name, templateId) {
   const p = currentProject(); if (!p) return;
   if (!p.activities) p.activities = [];
   const activityId = uid();
-  p.activities.push({ id: activityId, name, deliverableId });
+  p.activities.push({ id: activityId, name, deliverableId, fte: 1 });
 
   const tmpl = templateId ? state.templates.find(t => t.id === templateId) : null;
   if (tmpl && tmpl.tasks && tmpl.tasks.length) {
@@ -440,7 +447,7 @@ function addActivity(deliverableId, name, templateId) {
         deliverableId,
         activityId,
         activityType: def.type || null,
-        duration: def.duration || 1,
+        effort: def.duration || 1,
         dependencies: i === 0 ? [] : [{ id: ids[i - 1], type: 'FS' }],
         teams: [],
         assignee: '',
@@ -703,7 +710,7 @@ function addTask(task) {
   p.tasks.push({
     id: uid(),
     name: task.name || 'New Task',
-    duration: task.duration || 1,
+    effort: task.effort || 1,
     dependencies: task.dependencies || [],
     teams: task.teams || [],
     assignee: task.assignee || '',
@@ -742,7 +749,7 @@ function parseQuickAdd(raw) {
   const text = raw.trim();
   if (!text) return null;
 
-  const task = { name: '', duration: 1, dependencies: [], teams: [], assignee: '', notes: '' };
+  const task = { name: '', effort: 1, dependencies: [], teams: [], assignee: '', notes: '' };
   const parts = text.split(',').map(s => s.trim());
   task.name = parts[0];
 
@@ -750,8 +757,8 @@ function parseQuickAdd(raw) {
     const part = parts[i].trim();
 
     const durMatch = part.match(/^(\d+)\s*d(?:ays?)?$/i);
-    if (durMatch) { task.duration = parseInt(durMatch[1], 10); continue; }
-    if (/^\d+$/.test(part)) { task.duration = parseInt(part, 10); continue; }
+    if (durMatch) { task.effort = parseInt(durMatch[1], 10); continue; }
+    if (/^\d+$/.test(part)) { task.effort = parseInt(part, 10); continue; }
 
     const depMatch = part.match(/^dep(?:s|endenc(?:y|ies))?\s*[:=]\s*(.+)$/i);
     if (depMatch) {
@@ -916,7 +923,14 @@ function renderTable() {
     typeTd.appendChild(sel);
     tr.appendChild(typeTd);
 
-    tr.appendChild(makeNumCell(task.id, 'duration', task.duration));
+    const effort = task.effort ?? task.duration ?? 1;
+    tr.appendChild(makeNumCell(task.id, 'effort', effort));
+    const calDays = taskCalDays(task, p);
+    const calTd = document.createElement('td');
+    calTd.className = 'cal-days-cell';
+    calTd.textContent = calDays + 'd';
+    calTd.title = 'Calendar duration = effort ÷ FTE';
+    tr.appendChild(calTd);
     tr.appendChild(makeDepsCell(task, p));
     tr.appendChild(makeTeamsCell(task, p));
     tr.appendChild(makeEditCell(task.id, 'assignee', task.assignee || '', 'text'));
@@ -951,7 +965,7 @@ function renderTable() {
     const hTr = document.createElement('tr');
     hTr.className = 'deliverable-header-row';
     hTr.dataset.delivId = deliv.id;
-    const hTd = document.createElement('td'); hTd.colSpan = 11;
+    const hTd = document.createElement('td'); hTd.colSpan = 12;
     const hInner = document.createElement('div'); hInner.className = 'deliv-row-inner';
     if (indented) hInner.style.paddingLeft = '28px';
     const dot = document.createElement('span'); dot.className = 'deliv-dot'; dot.style.background = deliv.color;
@@ -969,13 +983,29 @@ function renderTable() {
 
       const aTr = document.createElement('tr');
       aTr.className = 'activity-header-row'; aTr.dataset.activityId = activity.id;
-      const aTd = document.createElement('td'); aTd.colSpan = 11;
+      const aTd = document.createElement('td'); aTd.colSpan = 12;
       const aInner = document.createElement('div'); aInner.className = 'activity-row-inner';
       const aName = document.createElement('span'); aName.className = 'activity-row-name'; aName.textContent = activity.name;
+
+      const totalEffort = aTasks.reduce((sum, t) => sum + (t.effort ?? t.duration ?? 1), 0);
+      const aEffort = document.createElement('span'); aEffort.className = 'activity-effort-label';
+      aEffort.textContent = totalEffort + ' person-days';
+
+      const fteLbl = document.createElement('label'); fteLbl.className = 'activity-fte-label';
+      fteLbl.textContent = 'FTE:';
+      const fteInp = document.createElement('input');
+      fteInp.type = 'number'; fteInp.min = '0.5'; fteInp.step = '0.5'; fteInp.className = 'activity-fte-input';
+      fteInp.value = activity.fte || 1;
+      fteInp.addEventListener('change', () => {
+        activity.fte = Math.max(0.5, parseFloat(fteInp.value) || 1);
+        markDirty(); renderAll();
+      });
+      fteLbl.appendChild(fteInp);
+
       const aDel = document.createElement('button'); aDel.className = 'activity-del-btn'; aDel.textContent = '×';
       aDel.title = `Delete activity "${activity.name}"`;
       aDel.addEventListener('click', () => showConfirm(`Delete activity "${activity.name}" and all its tasks?`, () => deleteActivity(activity.id)));
-      aInner.appendChild(aName); aInner.appendChild(aDel);
+      aInner.appendChild(aName); aInner.appendChild(aEffort); aInner.appendChild(fteLbl); aInner.appendChild(aDel);
       aTd.appendChild(aInner); aTr.appendChild(aTd); tbody.appendChild(aTr);
 
       aTasks.forEach(t => appendTaskRow(t, true));
@@ -987,7 +1017,7 @@ function renderTable() {
     // Spacer row for "+ Add Task" input insertion
     const sTr = document.createElement('tr');
     sTr.className = 'add-activity-row'; sTr.dataset.delivId = deliv.id;
-    const sTd = document.createElement('td'); sTd.colSpan = 11;
+    const sTd = document.createElement('td'); sTd.colSpan = 12;
     sTr.appendChild(sTd); tbody.appendChild(sTr);
   }
 
@@ -1001,7 +1031,7 @@ function renderTable() {
 
     const sTr = document.createElement('tr');
     sTr.className = 'stream-header-row';
-    const sTd = document.createElement('td'); sTd.colSpan = 11;
+    const sTd = document.createElement('td'); sTd.colSpan = 12;
     const sInner = document.createElement('div'); sInner.className = 'stream-row-inner';
     sInner.style.borderLeft = `4px solid ${stream.color}`;
     const sDot = document.createElement('span'); sDot.className = 'deliv-dot'; sDot.style.background = stream.color;
@@ -1022,7 +1052,7 @@ function renderTable() {
   if (ungrouped.length) {
     if (deliverables.length || streams.length) {
       const uTr = document.createElement('tr'); uTr.className = 'deliverable-header-row ungrouped-header';
-      const uTd = document.createElement('td'); uTd.colSpan = 11;
+      const uTd = document.createElement('td'); uTd.colSpan = 12;
       const uInner = document.createElement('div'); uInner.className = 'deliv-row-inner';
       uInner.textContent = 'Ungrouped Tasks';
       uTd.appendChild(uInner); uTr.appendChild(uTd); tbody.appendChild(uTr);
@@ -1039,7 +1069,7 @@ function showAddActivityInput(delivId) {
   const anchor = tbody.querySelector(`.add-activity-row[data-deliv-id="${delivId}"]`);
 
   const tr = document.createElement('tr'); tr.className = 'new-activity-input-row';
-  const td = document.createElement('td'); td.colSpan = 11;
+  const td = document.createElement('td'); td.colSpan = 12;
   const inner = document.createElement('div'); inner.className = 'new-activity-inner';
 
   const inp = document.createElement('input');
@@ -1261,6 +1291,8 @@ function renderDates() {
   document.querySelectorAll('#task-tbody tr[data-id]').forEach(tr => {
     const s = schedule[tr.dataset.id];
     tr.classList.toggle('critical-row', !!(s && s.isCritical));
+    const calCell = tr.querySelector('.cal-days-cell');
+    if (calCell && s) calCell.textContent = (s.endDay - s.startDay + 1) + 'd';
   });
 }
 
@@ -1641,6 +1673,15 @@ function renderGantt() {
       actRow.appendChild(aName);
       actRow.appendChild(aCount);
 
+      const actFte = activity.fte || 1;
+      if (actFte !== 1) {
+        const fteBadge = document.createElement('span');
+        fteBadge.className = 'gantt-fte-badge';
+        fteBadge.textContent = '×' + actFte;
+        fteBadge.title = actFte + ' FTE';
+        actRow.appendChild(fteBadge);
+      }
+
       actRow.addEventListener('click', () => {
         if (collapsedActivities.has(activity.id)) collapsedActivities.delete(activity.id);
         else collapsedActivities.add(activity.id);
@@ -1695,7 +1736,7 @@ function renderGantt() {
 
       const durSpan = document.createElement('span');
       durSpan.className = 'gantt-label-dur';
-      durSpan.textContent = task.duration + 'd';
+      durSpan.textContent = (s.endDay - s.startDay + 1) + 'd';
 
       labelRow.appendChild(numSpan);
       labelRow.appendChild(nameSpan);
@@ -2048,7 +2089,10 @@ function makeCanvasCard(task, p, schedule, arrowsSvg) {
 
   const dur = document.createElement('span');
   dur.className = 'canvas-card-dur';
-  dur.textContent = task.duration + 'd';
+  const calD = taskCalDays(task, p);
+  const effortD = task.effort ?? task.duration ?? 1;
+  const actFteVal = act?.fte || 1;
+  dur.textContent = calD + 'd' + (actFteVal !== 1 ? ' (' + effortD + 'pd)' : '');
   meta.appendChild(dur);
 
   if (task.assignee) {
