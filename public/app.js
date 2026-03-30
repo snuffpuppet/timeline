@@ -2494,17 +2494,46 @@ function renderHistogram(p, schedule, dayW, maxDay) {
   const teams = p.teams || [];
   const activities = p.activities || [];
 
-  // Build weekly buckets: for each team (+ unassigned), sum FTE-days per week
-  // Weeks: 0, 7, 14, ...
+  // Build weekly buckets: for each team (+ unassigned), sum person-days per week
+  // Weeks aligned to project start: week 0 = days 0-6, week 1 = days 7-13, ...
   const numWeeks = Math.ceil((maxDay + 1) / 7);
   const teamIds = teams.map(t => t.id);
   const UNASSIGNED = '__unassigned__';
 
-  // allBuckets[teamId][weekIdx] = total FTE-days
+  // Pre-compute working days per week bucket (for FTE conversion and effort distribution)
+  const projStart = p.startDate || null;
+  const projBase = projStart ? new Date(projStart + 'T00:00:00') : null;
+  const weekWorkDays = new Array(numWeeks).fill(0);
+  if (projBase) {
+    for (let w = 0; w < numWeeks; w++) {
+      for (let d = 0; d < 7; d++) {
+        const day = w * 7 + d;
+        const date = new Date(projBase);
+        date.setDate(date.getDate() + day);
+        if (isWorkingDay(date)) weekWorkDays[w]++;
+      }
+    }
+  } else {
+    weekWorkDays.fill(5); // fallback: assume 5 working days
+  }
+
+  // allBuckets[teamId][weekIdx] = person-days of effort in that week
   const allBuckets = {};
   [...teamIds, UNASSIGNED].forEach(id => {
     allBuckets[id] = new Array(numWeeks).fill(0);
   });
+
+  // Helper: count working days between two calendar offsets (inclusive)
+  function workDaysInRange(startOff, endOff) {
+    if (!projBase) return Math.max(0, endOff - startOff + 1);
+    let count = 0;
+    for (let d = startOff; d <= endOff; d++) {
+      const date = new Date(projBase);
+      date.setDate(date.getDate() + d);
+      if (isWorkingDay(date)) count++;
+    }
+    return count;
+  }
 
   p.tasks.forEach(task => {
     const s = schedule[task.id];
@@ -2516,18 +2545,20 @@ function renderHistogram(p, schedule, dayW, maxDay) {
     const ftePerTeam = taskTeams.length ? fte / taskTeams.length : fte;
     const assignees = taskTeams.length ? taskTeams : [UNASSIGNED];
 
-    // Distribute effort proportionally across weeks the task overlaps
+    // Total working days this task spans (denominator for effort distribution)
+    const totalTaskWorkDays = workDaysInRange(s.startDay, s.endDay);
+    if (totalTaskWorkDays === 0) return;
+
+    // Distribute effort proportionally by working days in each week overlap
     for (let w = 0; w < numWeeks; w++) {
       const wStart = w * 7;
       const wEnd = wStart + 6;
       const overlapStart = Math.max(s.startDay, wStart);
       const overlapEnd   = Math.min(s.endDay, wEnd);
       if (overlapEnd < overlapStart) continue;
-      const overlapDays = overlapEnd - overlapStart + 1;
-      const calDur = s.endDay - s.startDay + 1;
-      // Fraction of effort in this week
-      const frac = overlapDays / calDur;
-      const effortInWeek = effort * frac;
+      const workDaysOverlap = workDaysInRange(overlapStart, overlapEnd);
+      if (workDaysOverlap === 0) continue;
+      const effortInWeek = effort * (workDaysOverlap / totalTaskWorkDays);
       assignees.forEach(tid => {
         allBuckets[tid][w] += effortInWeek * (ftePerTeam / fte);
       });
@@ -2550,10 +2581,14 @@ function renderHistogram(p, schedule, dayW, maxDay) {
   const totalW = numWeeks * 7 * dayW;
   const totalH = rows.length * HIST_ROW_H;
 
-  // Global max effort-days per week across all teams (for scale)
+  // Global max FTE per week across all teams (for bar height scale)
   let globalMax = 0;
   rows.forEach(r => {
-    allBuckets[r.id].forEach(v => { if (v > globalMax) globalMax = v; });
+    allBuckets[r.id].forEach((v, wi) => {
+      const wdInWeek = weekWorkDays[wi] || 5;
+      const fte = v / wdInWeek;
+      if (fte > globalMax) globalMax = fte;
+    });
   });
   if (globalMax === 0) { el.classList.add('hidden'); return; }
 
@@ -2596,8 +2631,9 @@ function renderHistogram(p, schedule, dayW, maxDay) {
 
     buckets.forEach((val, wi) => {
       if (val < 0.01) return;
-      const fte = val / 5; // person-days ÷ 5 working days = FTE
-      const barH = Math.max(2, Math.round((val / globalMax) * BAR_MAX_H));
+      const wdInWeek = weekWorkDays[wi] || 5;
+      const fte = val / wdInWeek; // person-days ÷ working days in week = FTE
+      const barH = Math.max(2, Math.round((fte / globalMax) * BAR_MAX_H));
       const bx = wi * 7 * dayW + 1;
       const bw = Math.max(1, 7 * dayW - 2);
       const by = rowY + ROW_PAD + BAR_MAX_H - barH;
