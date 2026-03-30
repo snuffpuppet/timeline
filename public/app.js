@@ -1191,6 +1191,163 @@ function renderTable() {
     }
     ungrouped.forEach(t => appendTaskRow(t, false));
   }
+
+  setupActivityDrag();
+}
+
+// ── Activity Drag-to-Reorder ─────────────────────────────────
+let _actDrag = null;
+
+function setupActivityDrag() {
+  document.querySelectorAll('.activity-header-row').forEach(row => {
+    const inner = row.querySelector('.activity-row-inner');
+    if (!inner || inner.querySelector('.drag-handle')) return;
+    const handle = document.createElement('span');
+    handle.className = 'drag-handle';
+    handle.title = 'Drag to move activity';
+    handle.addEventListener('mousedown', e => startActivityDrag(e, row));
+    inner.insertBefore(handle, inner.firstChild);
+  });
+}
+
+function startActivityDrag(e, row) {
+  e.preventDefault();
+  e.stopPropagation();
+  const p = currentProject();
+  if (!p) return;
+
+  const activityId = row.dataset.activityId;
+  const activity = (p.activities || []).find(a => a.id === activityId);
+  if (!activity) return;
+
+  const rect = row.getBoundingClientRect();
+
+  const ghost = document.createElement('div');
+  ghost.className = 'activity-drag-ghost';
+  ghost.textContent = activity.name;
+  ghost.style.width = rect.width + 'px';
+  ghost.style.top  = rect.top + 'px';
+  ghost.style.left = rect.left + 'px';
+  document.body.appendChild(ghost);
+
+  const line = document.createElement('div');
+  line.id = 'activity-drag-line';
+  document.body.appendChild(line);
+
+  row.classList.add('drag-source');
+  document.body.style.cursor = 'grabbing';
+  document.body.style.userSelect = 'none';
+
+  _actDrag = { activityId, ghost, line, row, offsetY: e.clientY - rect.top, dropTarget: null };
+
+  document.addEventListener('mousemove', _onActDragMove);
+  document.addEventListener('mouseup', _onActDragEnd);
+}
+
+function _buildDropPositions() {
+  const p = currentProject();
+  if (!p || !_actDrag) return [];
+  const tbody = document.getElementById('task-tbody');
+  if (!tbody) return [];
+  const positions = [];
+
+  (p.deliverables || []).forEach(deliv => {
+    const delivActivities = (p.activities || [])
+      .filter(a => a.deliverableId === deliv.id && a.id !== _actDrag.activityId);
+
+    delivActivities.forEach(act => {
+      const actRow = tbody.querySelector(`[data-activity-id="${act.id}"]`);
+      if (!actRow) return;
+      const r = actRow.getBoundingClientRect();
+      if (r.top < -100 || r.top > window.innerHeight + 100) return; // skip offscreen
+      positions.push({ y: r.top, deliverableId: deliv.id, delivName: deliv.name, beforeActivityId: act.id });
+    });
+
+    // Drop at end of deliverable
+    const addRow = tbody.querySelector(`.add-activity-row[data-deliv-id="${deliv.id}"]`);
+    if (addRow) {
+      const r = addRow.getBoundingClientRect();
+      if (r.top >= -100 && r.top <= window.innerHeight + 100)
+        positions.push({ y: r.top, deliverableId: deliv.id, delivName: deliv.name, beforeActivityId: null });
+    }
+  });
+
+  return positions;
+}
+
+function _onActDragMove(e) {
+  if (!_actDrag) return;
+  const { ghost, line, offsetY } = _actDrag;
+
+  ghost.style.top = (e.clientY - offsetY) + 'px';
+
+  const positions = _buildDropPositions();
+  if (!positions.length) { line.style.display = 'none'; return; }
+
+  let best = positions[0], bestDist = Infinity;
+  positions.forEach(pos => {
+    const dist = Math.abs(e.clientY - pos.y);
+    if (dist < bestDist) { bestDist = dist; best = pos; }
+  });
+  _actDrag.dropTarget = best;
+
+  const scrollEl = document.getElementById('table-scroll');
+  const sr = scrollEl ? scrollEl.getBoundingClientRect() : { left: 0, width: window.innerWidth };
+  line.style.display = 'block';
+  line.style.top  = (best.y - 1) + 'px';
+  line.style.left = sr.left + 'px';
+  line.style.width = sr.width + 'px';
+
+  // Show deliverable context label when crossing deliverable boundary
+  const p = currentProject();
+  const srcActivity = p && (p.activities || []).find(a => a.id === _actDrag.activityId);
+  const crossingDeliverable = srcActivity && best.deliverableId !== srcActivity.deliverableId;
+  line.dataset.label = crossingDeliverable ? best.delivName : '';
+}
+
+function _onActDragEnd() {
+  if (!_actDrag) return;
+  const { activityId, ghost, line, row, dropTarget } = _actDrag;
+
+  ghost.remove();
+  line.remove();
+  row.classList.remove('drag-source');
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+  document.removeEventListener('mousemove', _onActDragMove);
+  document.removeEventListener('mouseup', _onActDragEnd);
+  _actDrag = null;
+
+  if (!dropTarget) return;
+
+  const p = currentProject();
+  if (!p) return;
+  const activity = (p.activities || []).find(a => a.id === activityId);
+  if (!activity) return;
+
+  // Remove from array
+  p.activities = p.activities.filter(a => a.id !== activityId);
+
+  // Update deliverable on activity and its tasks
+  const prevDelivId = activity.deliverableId;
+  activity.deliverableId = dropTarget.deliverableId;
+  if (prevDelivId !== dropTarget.deliverableId) {
+    p.tasks.forEach(t => { if (t.activityId === activityId) t.deliverableId = dropTarget.deliverableId; });
+  }
+
+  // Insert at target position
+  if (dropTarget.beforeActivityId) {
+    const idx = p.activities.findIndex(a => a.id === dropTarget.beforeActivityId);
+    p.activities.splice(idx >= 0 ? idx : p.activities.length, 0, activity);
+  } else {
+    // Insert after last activity of target deliverable (or at end)
+    let lastIdx = -1;
+    p.activities.forEach((a, i) => { if (a.deliverableId === dropTarget.deliverableId) lastIdx = i; });
+    p.activities.splice(lastIdx + 1, 0, activity);
+  }
+
+  markDirty();
+  renderAll();
 }
 
 function showAddActivityInput(delivId) {

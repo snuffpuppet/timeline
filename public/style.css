@@ -1611,6 +1611,83 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 .activity-header-row:hover .activity-del-btn { opacity: 1; }
 .activity-del-btn:hover { background: #fee2e2; color: var(--danger); }
 
+/* ── Activity drag-to-reorder ─────────────────────────────── */
+.drag-handle {
+  width: 14px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  color: var(--text-4);
+  font-size: 13px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity .12s;
+  user-select: none;
+  margin-right: 4px;
+}
+.drag-handle::before { content: '⠿'; }
+.activity-header-row:hover .drag-handle { opacity: 1; }
+.drag-handle:active { cursor: grabbing; }
+
+.drag-source { opacity: 0.35; pointer-events: none; }
+
+.activity-drag-ghost {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  background: var(--surface);
+  border: 1.5px solid var(--accent);
+  border-radius: 6px;
+  padding: 0 12px 0 24px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  box-shadow: 0 4px 20px rgba(0,0,0,.18);
+  white-space: nowrap;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.94;
+}
+
+#activity-drag-line {
+  position: fixed;
+  z-index: 9998;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  display: none;
+  border-radius: 1px;
+}
+#activity-drag-line::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+#activity-drag-line[data-label]:not([data-label=''])::after {
+  content: attr(data-label);
+  position: absolute;
+  right: 8px;
+  top: -9px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--bg);
+  padding: 0 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
 .activity-team-badge {
   display: inline-flex;
   align-items: center;
