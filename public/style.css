@@ -395,8 +395,10 @@ body {
 
 button { cursor: pointer; font-family: inherit; }
 
+#streams-btn,
 #teams-btn,
-#deliverables-btn {
+#deliverables-btn,
+#templates-btn {
   padding: 6px 13px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
@@ -407,8 +409,10 @@ button { cursor: pointer; font-family: inherit; }
   transition: all .15s;
   letter-spacing: .01em;
 }
+#streams-btn:hover,
 #teams-btn:hover,
-#deliverables-btn:hover {
+#deliverables-btn:hover,
+#templates-btn:hover {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-sub);
@@ -1319,7 +1323,7 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 }
 
 /* ── Gantt Group Header Row ─────────────────────────────────── */
-.gantt-group-header-row {
+.gantt-activity-header-row {
   height: var(--row-h);
   display: flex;
   align-items: center;
@@ -1331,9 +1335,9 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   user-select: none;
   transition: filter .12s;
 }
-.gantt-group-header-row:hover { filter: brightness(.97); }
+.gantt-activity-header-row:hover { filter: brightness(.97); }
 
-.gantt-group-header-name {
+.gantt-activity-header-name {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-2);
@@ -1534,25 +1538,25 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 .add-task-btn:hover { background: var(--accent-sub); border-color: var(--accent-muted); }
 
 /* Task group header rows */
-.task-group-header-row td {
+.activity-header-row td {
   padding: 0;
   background: var(--surface);
   border-bottom: 1px solid #eef0f4;
 }
-.group-row-inner {
+.activity-row-inner {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 12px 0 28px;
   height: 30px;
 }
-.group-row-name {
+.activity-row-name {
   flex: 1;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-2);
 }
-.group-del-btn {
+.activity-del-btn {
   width: 20px; height: 20px;
   border-radius: 4px;
   border: none;
@@ -1564,23 +1568,23 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   opacity: 0;
   transition: opacity .12s, background .12s;
 }
-.task-group-header-row:hover .group-del-btn { opacity: 1; }
-.group-del-btn:hover { background: #fee2e2; color: var(--danger); }
+.activity-header-row:hover .activity-del-btn { opacity: 1; }
+.activity-del-btn:hover { background: #fee2e2; color: var(--danger); }
 
-/* Activity indent */
-.activity-indent { padding-left: 12px; }
-.activity-indent .cell-edit { padding-left: 20px; }
+/* Task indent */
+.task-indent { padding-left: 12px; }
+.task-indent .cell-edit { padding-left: 20px; }
 
 /* New task group input row */
-.new-group-input-row td { padding: 0; background: var(--accent-sub); }
-.new-group-inner {
+.new-activity-input-row td { padding: 0; background: var(--accent-sub); }
+.new-activity-inner {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 12px 6px 28px;
   border-bottom: 1px solid var(--accent-muted);
 }
-.new-group-input {
+.new-activity-input {
   flex: 1;
   border: 1px solid var(--accent-muted);
   border-radius: 5px;
@@ -1591,7 +1595,7 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
   color: var(--text);
   outline: none;
 }
-.new-group-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent); }
+.new-activity-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent); }
 .btn-sm {
   height: 26px; padding: 0 10px;
   border-radius: 5px;
@@ -1609,8 +1613,8 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 }
 .btn-ghost:hover { background: var(--bg); color: var(--text-2); }
 
-/* add-group-row (spacer at bottom of deliverable section) */
-.add-group-row td { padding: 0; background: transparent; height: 0; border: none; }
+/* add-activity-row (spacer at bottom of deliverable section) */
+.add-activity-row td { padding: 0; background: transparent; height: 0; border: none; }
 
 /* Activity type select */
 .type-cell { padding: 0 4px; }
@@ -1870,6 +1874,198 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 .canvas-card-handle:hover::after {
   transform: scale(1.2);
 }
+
+/* ── Templates Modal ────────────────────────────────────────── */
+#templates-modal-box {
+  background: var(--surface);
+  border-radius: var(--r-xl);
+  width: 560px;
+  max-width: 95vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-xl);
+  border: 1px solid var(--border);
+}
+
+#templates-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  z-index: 1;
+}
+#templates-modal-header h3 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -.01em;
+}
+
+#templates-list {
+  padding: 4px 0;
+}
+
+#add-template-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: calc(100% - 48px);
+  margin: 6px 24px 20px;
+  padding: 9px;
+  border: 1.5px dashed var(--border-2);
+  border-radius: var(--r);
+  background: transparent;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-3);
+  cursor: pointer;
+  text-align: center;
+  transition: all .15s;
+}
+#add-template-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-sub);
+}
+
+.tmpl-section {
+  border-bottom: 1px solid var(--border);
+  padding: 0;
+}
+.tmpl-section:last-child { border-bottom: none; }
+
+.tmpl-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px 6px;
+}
+
+.tmpl-name-input {
+  flex: 1;
+  border: 1px solid transparent;
+  background: transparent;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 5px 9px;
+  border-radius: var(--r-sm);
+  outline: none;
+  transition: all .15s;
+}
+.tmpl-name-input:focus {
+  border-color: var(--accent);
+  background: var(--accent-sub);
+}
+
+.tmpl-tasks {
+  padding: 2px 20px 12px 40px;
+}
+
+.tmpl-task-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 0;
+}
+
+.tmpl-task-name {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  padding: 4px 8px;
+  outline: none;
+  background: var(--bg);
+  min-width: 0;
+  transition: border-color .15s;
+}
+.tmpl-task-name:focus { border-color: var(--accent); background: #fff; }
+
+.tmpl-task-type {
+  width: 108px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg);
+  outline: none;
+  cursor: pointer;
+  transition: border-color .15s;
+}
+.tmpl-task-type:focus { border-color: var(--accent); }
+
+.tmpl-task-dur {
+  width: 48px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: 'DM Mono', monospace;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg);
+  outline: none;
+  text-align: center;
+  flex-shrink: 0;
+  transition: border-color .15s;
+}
+.tmpl-task-dur:focus { border-color: var(--accent); }
+
+.tmpl-task-dur-label {
+  font-size: 11px;
+  color: var(--text-4);
+  flex-shrink: 0;
+  margin-left: -4px;
+}
+
+.tmpl-add-task-btn {
+  background: none;
+  border: 1.5px dashed var(--border-2);
+  color: var(--text-4);
+  border-radius: var(--r-sm);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 12px;
+  margin-top: 4px;
+  cursor: pointer;
+  transition: all .15s;
+}
+.tmpl-add-task-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-sub);
+}
+
+/* Template selector in the add-activity input row */
+.template-select {
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg);
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color .15s;
+}
+.template-select:focus { border-color: var(--accent); }
 
 /* ── Print ──────────────────────────────────────────────────── */
 @media print {

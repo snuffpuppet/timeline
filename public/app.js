@@ -38,6 +38,7 @@ const DEP_TYPES = ['FS', 'FF', 'SS'];
 // ── State ────────────────────────────────────────────────────
 let state = {
   projects: [],
+  templates: [],
   currentId: null,
   view: 'table',
   zoom: 'week',
@@ -52,7 +53,7 @@ let dragDep = null; // { fromId, fromX, fromY } — active Gantt drag state
 let canvasState = { pan: { x: 60, y: 60 }, zoom: 1 };
 let collapsedDeliverables = new Set(); // deliverable IDs collapsed in Gantt view
 let collapsedStreams = new Set();      // stream IDs collapsed in Gantt view
-let collapsedGroups = new Set();       // task group IDs collapsed in Gantt view
+let collapsedActivities = new Set();   // activity IDs collapsed in Gantt view
 let canvasDepDrag = null;
 let _taskRowMap = {}; // taskId → 1-based index in p.tasks[], rebuilt by renderTable
 
@@ -180,13 +181,17 @@ function computeSchedule(project) {
 
 // ── Data Load / Save ─────────────────────────────────────────
 async function loadData() {
+  let data = {};
   try {
     const res = await fetch('/api/data');
-    const data = await res.json();
+    data = await res.json();
     state.projects = data.projects || [];
+    state.templates = data.templates || [];
   } catch {
     state.projects = [];
+    state.templates = [];
   }
+  if (data.templates === undefined) { seedDefaultTemplates(); markDirty(); }
   if (state.projects.length) state.currentId = state.projects[0].id;
   renderAll();
 }
@@ -198,9 +203,25 @@ async function saveData() {
     await fetch('/api/data', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projects: state.projects }),
+      body: JSON.stringify({ projects: state.projects, templates: state.templates }),
     });
   } catch { console.error('Save failed'); }
+}
+
+function seedDefaultTemplates() {
+  state.templates = [{
+    id: uid(),
+    name: 'Development',
+    tasks: [
+      { name: 'Design',       type: 'design',       duration: 2  },
+      { name: 'Build',        type: 'build',        duration: 10 },
+      { name: 'Int. Testing', type: 'int-test',     duration: 5  },
+      { name: 'UAT',          type: 'uat',          duration: 3  },
+      { name: 'Data Cleanse', type: 'data-cleanse', duration: 2  },
+      { name: 'Migration',    type: 'migration',    duration: 2  },
+      { name: 'Release',      type: 'release',      duration: 1  },
+    ],
+  }];
 }
 
 function markDirty() {
@@ -224,7 +245,7 @@ function updateSaveIndicator() {
 // ── Project Operations ───────────────────────────────────────
 function newProject() {
   const today = new Date().toISOString().slice(0, 10);
-  const p = { id: uid(), name: 'New Project', startDate: today, streams: [], teams: [], deliverables: [], taskGroups: [], tasks: [] };
+  const p = { id: uid(), name: 'New Project', startDate: today, streams: [], teams: [], deliverables: [], activities: [], tasks: [] };
   state.projects.push(p);
   state.currentId = p.id;
   state.teamFilter = null;
@@ -301,11 +322,11 @@ function addDeliverable() {
 
 function deleteDeliverable(delivId) {
   const p = currentProject(); if (!p) return;
-  const groupIds = new Set((p.taskGroups || []).filter(g => g.deliverableId === delivId).map(g => g.id));
+  const groupIds = new Set((p.activities || []).filter(g => g.deliverableId === delivId).map(g => g.id));
   p.deliverables = (p.deliverables || []).filter(d => d.id !== delivId);
-  p.taskGroups = (p.taskGroups || []).filter(g => g.deliverableId !== delivId);
+  p.activities = (p.activities || []).filter(g => g.deliverableId !== delivId);
   p.tasks.forEach(t => {
-    if (t.deliverableId === delivId) { t.deliverableId = null; t.groupId = null; }
+    if (t.deliverableId === delivId) { t.deliverableId = null; t.activityId = null; }
   });
   markDirty();
   renderDeliverablesModal();
@@ -403,49 +424,40 @@ function renderStreamsModal() {
   });
 }
 
-function addTaskGroup(deliverableId, name) {
+function addActivity(deliverableId, name, templateId) {
   const p = currentProject(); if (!p) return;
-  if (!p.taskGroups) p.taskGroups = [];
-  const groupId = uid();
-  p.taskGroups.push({ id: groupId, name, deliverableId });
+  if (!p.activities) p.activities = [];
+  const activityId = uid();
+  p.activities.push({ id: activityId, name, deliverableId });
 
-  const buildDur = 10;
-  const designDur = Math.max(1, Math.round(buildDur * 0.2));
-  const defs = [
-    { type: 'design',       name: 'Design',       dur: designDur },
-    { type: 'build',        name: 'Build',        dur: buildDur  },
-    { type: 'int-test',     name: 'Int. Testing', dur: 5         },
-    { type: 'uat',          name: 'UAT',          dur: 3         },
-    { type: 'data-cleanse', name: 'Data Cleanse', dur: 2         },
-    { type: 'migration',    name: 'Migration',    dur: 2         },
-    { type: 'release',      name: 'Release',      dur: 1         },
-  ];
-  const ids = defs.map(() => uid());
-  defs.forEach((def, i) => {
-    p.tasks.push({
-      id: ids[i],
-      name: def.name,
-      deliverableId,
-      groupId,
-      activityType: def.type,
-      duration: def.dur,
-      dependencies: i === 0 ? [] : [{ id: ids[i - 1], type: 'FS' }],
-      teams: [],
-      assignee: '',
-      notes: '',
-      color: actTypeInfo(def.type)?.color || colorForIndex(p.tasks.length),
+  const tmpl = templateId ? state.templates.find(t => t.id === templateId) : null;
+  if (tmpl && tmpl.tasks && tmpl.tasks.length) {
+    const ids = tmpl.tasks.map(() => uid());
+    tmpl.tasks.forEach((def, i) => {
+      p.tasks.push({
+        id: ids[i],
+        name: def.name || 'Task',
+        deliverableId,
+        activityId,
+        activityType: def.type || null,
+        duration: def.duration || 1,
+        dependencies: i === 0 ? [] : [{ id: ids[i - 1], type: 'FS' }],
+        teams: [],
+        assignee: '',
+        notes: '',
+        color: actTypeInfo(def.type)?.color || colorForIndex(p.tasks.length),
+      });
     });
-  });
+  }
   markDirty();
   renderAll();
 }
 
-function deleteTaskGroup(groupId) {
+function deleteActivity(activityId) {
   const p = currentProject(); if (!p) return;
-  const group = (p.taskGroups || []).find(g => g.id === groupId);
-  const taskIds = new Set(p.tasks.filter(t => t.groupId === groupId).map(t => t.id));
-  p.taskGroups = (p.taskGroups || []).filter(g => g.id !== groupId);
-  p.tasks = p.tasks.filter(t => t.groupId !== groupId);
+  const taskIds = new Set(p.tasks.filter(t => t.activityId === activityId).map(t => t.id));
+  p.activities = (p.activities || []).filter(a => a.id !== activityId);
+  p.tasks = p.tasks.filter(t => t.activityId !== activityId);
   p.tasks.forEach(t => { t.dependencies = normalizeDeps(t.dependencies).filter(d => !taskIds.has(d.id)); });
   markDirty();
   renderAll();
@@ -857,13 +869,13 @@ function renderTable() {
 
   const startDate = p.startDate ? new Date(p.startDate) : new Date();
   const deliverables = p.deliverables || [];
-  const taskGroups = p.taskGroups || [];
+  const activities = p.activities || [];
 
   // Row numbers = position in p.tasks[] (stable, used for dep chips)
   _taskRowMap = {};
   p.tasks.forEach((t, i) => { _taskRowMap[t.id] = i + 1; });
 
-  function appendActivityRow(task, indented) {
+  function appendTaskRow(task, indented) {
     const s = schedule && schedule[task.id];
     const taskStart = s ? addDays(startDate, s.startDay) : null;
     const taskEnd   = s ? addDays(startDate, s.endDay)   : null;
@@ -879,7 +891,7 @@ function renderTable() {
     tr.appendChild(numTd);
 
     const nameTd = makeEditCell(task.id, 'name', task.name, 'text', task.color);
-    if (indented) nameTd.classList.add('activity-indent');
+    if (indented) nameTd.classList.add('task-indent');
     tr.appendChild(nameTd);
 
     // Activity type select
@@ -923,7 +935,7 @@ function renderTable() {
     const delTd = document.createElement('td');
     const delBtn = document.createElement('button');
     delBtn.className = 'del-btn'; delBtn.textContent = '×';
-    delBtn.title = 'Delete activity';
+    delBtn.title = 'Delete task';
     delBtn.addEventListener('click', () => deleteTask(task.id));
     delTd.appendChild(delBtn);
     tr.appendChild(delTd);
@@ -933,7 +945,7 @@ function renderTable() {
 
   // ── Helper: render one deliverable block ──
   function renderDeliverableBlock(deliv, indented) {
-    const dGroups = taskGroups.filter(g => g.deliverableId === deliv.id);
+    const dActivities = activities.filter(a => a.deliverableId === deliv.id);
 
     // Deliverable header
     const hTr = document.createElement('tr');
@@ -944,37 +956,37 @@ function renderTable() {
     if (indented) hInner.style.paddingLeft = '28px';
     const dot = document.createElement('span'); dot.className = 'deliv-dot'; dot.style.background = deliv.color;
     const dName = document.createElement('span'); dName.className = 'deliv-name'; dName.textContent = deliv.name;
-    const addBtn = document.createElement('button'); addBtn.className = 'add-task-btn'; addBtn.textContent = '+ Add Task';
-    addBtn.addEventListener('click', () => showAddTaskGroupInput(deliv.id));
+    const addBtn = document.createElement('button'); addBtn.className = 'add-task-btn'; addBtn.textContent = '+ Add Activity';
+    addBtn.addEventListener('click', () => showAddActivityInput(deliv.id));
     hInner.appendChild(dot); hInner.appendChild(dName); hInner.appendChild(addBtn);
     hTd.appendChild(hInner); hTr.appendChild(hTd); tbody.appendChild(hTr);
 
-    // Task groups
-    dGroups.forEach(group => {
-      const gTasks = p.tasks
-        .filter(t => t.groupId === group.id)
+    // Activities
+    dActivities.forEach(activity => {
+      const aTasks = p.tasks
+        .filter(t => t.activityId === activity.id)
         .sort((a, b) => actTypeOrder(a.activityType) - actTypeOrder(b.activityType));
 
-      const gTr = document.createElement('tr');
-      gTr.className = 'task-group-header-row'; gTr.dataset.groupId = group.id;
-      const gTd = document.createElement('td'); gTd.colSpan = 11;
-      const gInner = document.createElement('div'); gInner.className = 'group-row-inner';
-      const gName = document.createElement('span'); gName.className = 'group-row-name'; gName.textContent = group.name;
-      const gDel = document.createElement('button'); gDel.className = 'group-del-btn'; gDel.textContent = '×';
-      gDel.title = `Delete task "${group.name}"`;
-      gDel.addEventListener('click', () => showConfirm(`Delete task "${group.name}" and all its activities?`, () => deleteTaskGroup(group.id)));
-      gInner.appendChild(gName); gInner.appendChild(gDel);
-      gTd.appendChild(gInner); gTr.appendChild(gTd); tbody.appendChild(gTr);
+      const aTr = document.createElement('tr');
+      aTr.className = 'activity-header-row'; aTr.dataset.activityId = activity.id;
+      const aTd = document.createElement('td'); aTd.colSpan = 11;
+      const aInner = document.createElement('div'); aInner.className = 'activity-row-inner';
+      const aName = document.createElement('span'); aName.className = 'activity-row-name'; aName.textContent = activity.name;
+      const aDel = document.createElement('button'); aDel.className = 'activity-del-btn'; aDel.textContent = '×';
+      aDel.title = `Delete activity "${activity.name}"`;
+      aDel.addEventListener('click', () => showConfirm(`Delete activity "${activity.name}" and all its tasks?`, () => deleteActivity(activity.id)));
+      aInner.appendChild(aName); aInner.appendChild(aDel);
+      aTd.appendChild(aInner); aTr.appendChild(aTd); tbody.appendChild(aTr);
 
-      gTasks.forEach(t => appendActivityRow(t, true));
+      aTasks.forEach(t => appendTaskRow(t, true));
     });
 
     // Ungrouped tasks within this deliverable
-    p.tasks.filter(t => t.deliverableId === deliv.id && !t.groupId).forEach(t => appendActivityRow(t, false));
+    p.tasks.filter(t => t.deliverableId === deliv.id && !t.activityId).forEach(t => appendTaskRow(t, false));
 
     // Spacer row for "+ Add Task" input insertion
     const sTr = document.createElement('tr');
-    sTr.className = 'add-group-row'; sTr.dataset.delivId = deliv.id;
+    sTr.className = 'add-activity-row'; sTr.dataset.delivId = deliv.id;
     const sTd = document.createElement('td'); sTd.colSpan = 11;
     sTr.appendChild(sTd); tbody.appendChild(sTr);
   }
@@ -1015,34 +1027,46 @@ function renderTable() {
       uInner.textContent = 'Ungrouped Tasks';
       uTd.appendChild(uInner); uTr.appendChild(uTd); tbody.appendChild(uTr);
     }
-    ungrouped.forEach(t => appendActivityRow(t, false));
+    ungrouped.forEach(t => appendTaskRow(t, false));
   }
 }
 
-function showAddTaskGroupInput(delivId) {
+function showAddActivityInput(delivId) {
   const tbody = document.getElementById('task-tbody');
-  const old = tbody.querySelector('.new-group-input-row');
+  const old = tbody.querySelector('.new-activity-input-row');
   if (old) old.remove();
 
-  const anchor = tbody.querySelector(`.add-group-row[data-deliv-id="${delivId}"]`);
+  const anchor = tbody.querySelector(`.add-activity-row[data-deliv-id="${delivId}"]`);
 
-  const tr = document.createElement('tr'); tr.className = 'new-group-input-row';
+  const tr = document.createElement('tr'); tr.className = 'new-activity-input-row';
   const td = document.createElement('td'); td.colSpan = 11;
-  const inner = document.createElement('div'); inner.className = 'new-group-inner';
+  const inner = document.createElement('div'); inner.className = 'new-activity-inner';
 
   const inp = document.createElement('input');
-  inp.type = 'text'; inp.className = 'new-group-input';
-  inp.placeholder = 'Task name (e.g. Core Service, CRM Integration)…';
+  inp.type = 'text'; inp.className = 'new-activity-input';
+  inp.placeholder = 'Activity name (e.g. Core Service, CRM Integration)…';
+
+  const tmplSelect = document.createElement('select');
+  tmplSelect.className = 'template-select';
+  const noTmpl = document.createElement('option');
+  noTmpl.value = ''; noTmpl.textContent = 'Empty';
+  tmplSelect.appendChild(noTmpl);
+  state.templates.forEach((tmpl, i) => {
+    const opt = document.createElement('option');
+    opt.value = tmpl.id; opt.textContent = tmpl.name;
+    if (i === 0) opt.selected = true;
+    tmplSelect.appendChild(opt);
+  });
 
   const addBtn = document.createElement('button'); addBtn.className = 'btn-sm'; addBtn.textContent = 'Add';
   const cancelBtn = document.createElement('button'); cancelBtn.className = 'btn-sm btn-ghost'; cancelBtn.textContent = 'Cancel';
 
-  const doAdd = () => { const name = inp.value.trim(); if (name) addTaskGroup(delivId, name); tr.remove(); };
+  const doAdd = () => { const name = inp.value.trim(); if (name) addActivity(delivId, name, tmplSelect.value || null); tr.remove(); };
   inp.addEventListener('keydown', e => { if (e.key === 'Enter') doAdd(); if (e.key === 'Escape') tr.remove(); });
   addBtn.addEventListener('click', doAdd);
   cancelBtn.addEventListener('click', () => tr.remove());
 
-  inner.appendChild(inp); inner.appendChild(addBtn); inner.appendChild(cancelBtn);
+  inner.appendChild(inp); inner.appendChild(tmplSelect); inner.appendChild(addBtn); inner.appendChild(cancelBtn);
   td.appendChild(inner); tr.appendChild(td);
 
   if (anchor) tbody.insertBefore(tr, anchor);
@@ -1347,15 +1371,15 @@ function renderGantt() {
         const delivCollapsed = collapsedDeliverables.has(deliv.id);
         rows.push({ type: 'deliv-header', deliv, delivTasks, collapsed: delivCollapsed, withinStream: true });
         if (!delivCollapsed) {
-          (p.taskGroups || []).filter(g => g.deliverableId === deliv.id).forEach(group => {
-            const gTasks = delivTasks.filter(t => t.groupId === group.id)
+          (p.activities || []).filter(a => a.deliverableId === deliv.id).forEach(activity => {
+            const aTasks = delivTasks.filter(t => t.activityId === activity.id)
               .sort((a, b) => actTypeOrder(a.activityType) - actTypeOrder(b.activityType));
-            if (!gTasks.length) return;
-            const groupCollapsed = collapsedGroups.has(group.id);
-            rows.push({ type: 'group-header', group, gTasks, collapsed: groupCollapsed });
-            if (!groupCollapsed) gTasks.forEach(t => rows.push({ type: 'task', task: t }));
+            if (!aTasks.length) return;
+            const actCollapsed = collapsedActivities.has(activity.id);
+            rows.push({ type: 'activity-header', activity, gTasks: aTasks, collapsed: actCollapsed });
+            if (!actCollapsed) aTasks.forEach(t => rows.push({ type: 'task', task: t }));
           });
-          delivTasks.filter(t => !t.groupId).forEach(t => rows.push({ type: 'task', task: t }));
+          delivTasks.filter(t => !t.activityId).forEach(t => rows.push({ type: 'task', task: t }));
         }
       });
     }
@@ -1368,15 +1392,15 @@ function renderGantt() {
     const collapsed = collapsedDeliverables.has(deliv.id);
     rows.push({ type: 'deliv-header', deliv, delivTasks, collapsed });
     if (!collapsed) {
-      (p.taskGroups || []).filter(g => g.deliverableId === deliv.id).forEach(group => {
-        const gTasks = delivTasks.filter(t => t.groupId === group.id)
+      (p.activities || []).filter(a => a.deliverableId === deliv.id).forEach(activity => {
+        const aTasks = delivTasks.filter(t => t.activityId === activity.id)
           .sort((a, b) => actTypeOrder(a.activityType) - actTypeOrder(b.activityType));
-        if (!gTasks.length) return;
-        const groupCollapsed = collapsedGroups.has(group.id);
-        rows.push({ type: 'group-header', group, gTasks, collapsed: groupCollapsed });
-        if (!groupCollapsed) gTasks.forEach(t => rows.push({ type: 'task', task: t }));
+        if (!aTasks.length) return;
+        const actCollapsed = collapsedActivities.has(activity.id);
+        rows.push({ type: 'activity-header', activity, gTasks: aTasks, collapsed: actCollapsed });
+        if (!actCollapsed) aTasks.forEach(t => rows.push({ type: 'task', task: t }));
       });
-      delivTasks.filter(t => !t.groupId).forEach(t => rows.push({ type: 'task', task: t }));
+      delivTasks.filter(t => !t.activityId).forEach(t => rows.push({ type: 'task', task: t }));
     }
   });
 
@@ -1420,7 +1444,7 @@ function renderGantt() {
       const indent = row.withinStream ? 14 : 0;
       swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: ROW_H, fill: row.deliv.color + '1a' }));
       swimG.appendChild(makeSVGEl('rect', { x: indent, y: rowY, width: 3, height: ROW_H, fill: row.deliv.color }));
-    } else if (row.type === 'group-header') {
+    } else if (row.type === 'activity-header') {
       swimG.appendChild(makeSVGEl('rect', { x: 0, y: rowY, width: totalW, height: ROW_H, fill: '#f1f3f5' }));
     } else if (row.task && row.task.deliverableId) {
       const deliv = deliverables.find(d => d.id === row.task.deliverableId);
@@ -1576,10 +1600,10 @@ function renderGantt() {
 
       labelsBody.appendChild(headerRow);
 
-    } else if (row.type === 'group-header') {
-      const { group, gTasks, collapsed } = row;
+    } else if (row.type === 'activity-header') {
+      const { activity, gTasks, collapsed } = row;
 
-      // Summary bar for collapsed group
+      // Summary bar for collapsed activity
       const scheduled = gTasks.filter(t => schedule[t.id]);
       if (scheduled.length) {
         const minStart = Math.min(...scheduled.map(t => schedule[t.id].startDay));
@@ -1593,37 +1617,37 @@ function renderGantt() {
         if (collapsed && w > 40) {
           const lbl = makeSVGEl('text', { x: x + 7, y: y + BAR_H / 2 + 4,
             fill: '#fff', 'font-size': 11, 'font-weight': 600 });
-          lbl.textContent = truncate(group.name + ' (' + scheduled.length + ')', Math.floor(w / 7));
+          lbl.textContent = truncate(activity.name + ' (' + scheduled.length + ')', Math.floor(w / 7));
           barsG.appendChild(lbl);
         }
       }
 
-      const groupRow = document.createElement('div');
-      groupRow.className = 'gantt-group-header-row';
+      const actRow = document.createElement('div');
+      actRow.className = 'gantt-activity-header-row';
 
-      const gToggle = document.createElement('span');
-      gToggle.className = 'gantt-deliv-toggle';
-      gToggle.textContent = collapsed ? '▶' : '▼';
+      const aToggle = document.createElement('span');
+      aToggle.className = 'gantt-deliv-toggle';
+      aToggle.textContent = collapsed ? '▶' : '▼';
 
-      const gName = document.createElement('span');
-      gName.className = 'gantt-group-header-name';
-      gName.textContent = group.name;
+      const aName = document.createElement('span');
+      aName.className = 'gantt-activity-header-name';
+      aName.textContent = activity.name;
 
-      const gCount = document.createElement('span');
-      gCount.className = 'gantt-deliv-header-count';
-      gCount.textContent = gTasks.length + (gTasks.length === 1 ? ' activity' : ' activities');
+      const aCount = document.createElement('span');
+      aCount.className = 'gantt-deliv-header-count';
+      aCount.textContent = gTasks.length + (gTasks.length === 1 ? ' task' : ' tasks');
 
-      groupRow.appendChild(gToggle);
-      groupRow.appendChild(gName);
-      groupRow.appendChild(gCount);
+      actRow.appendChild(aToggle);
+      actRow.appendChild(aName);
+      actRow.appendChild(aCount);
 
-      groupRow.addEventListener('click', () => {
-        if (collapsedGroups.has(group.id)) collapsedGroups.delete(group.id);
-        else collapsedGroups.add(group.id);
+      actRow.addEventListener('click', () => {
+        if (collapsedActivities.has(activity.id)) collapsedActivities.delete(activity.id);
+        else collapsedActivities.add(activity.id);
         renderGantt();
       });
 
-      labelsBody.appendChild(groupRow);
+      labelsBody.appendChild(actRow);
 
     } else {
       // Task row
@@ -1658,7 +1682,7 @@ function renderGantt() {
       const labelRow = document.createElement('div');
       labelRow.className = 'gantt-label-row' + (s.isCritical ? ' critical-label' : '');
       if (dimmed) labelRow.style.opacity = '0.35';
-      if (task.deliverableId && task.groupId) labelRow.style.paddingLeft = '20px';
+      if (task.deliverableId && task.activityId) labelRow.style.paddingLeft = '28px';
 
       const numSpan = document.createElement('span');
       numSpan.className = 'gantt-label-num';
@@ -2005,11 +2029,11 @@ function makeCanvasCard(task, p, schedule, arrowsSvg) {
 
   // Context label (deliverable / group)
   const deliv = task.deliverableId ? (p.deliverables || []).find(d => d.id === task.deliverableId) : null;
-  const grp = task.groupId ? (p.taskGroups || []).find(g => g.id === task.groupId) : null;
-  if (deliv || grp) {
+  const act = task.activityId ? (p.activities || []).find(a => a.id === task.activityId) : null;
+  if (deliv || act) {
     const ctx = document.createElement('div');
     ctx.className = 'canvas-card-context';
-    ctx.textContent = grp && deliv ? deliv.name + ' / ' + grp.name : deliv ? deliv.name : grp.name;
+    ctx.textContent = act && deliv ? deliv.name + ' / ' + act.name : deliv ? deliv.name : act.name;
     body.appendChild(ctx);
   }
 
@@ -2089,7 +2113,7 @@ function makeCanvasCard(task, p, schedule, arrowsSvg) {
 
 function drawCanvasArrows(svg, p, byId) {
   [...svg.children].forEach(el => {
-    if (el.tagName !== 'defs' && el.id !== 'canvas-ghost-line') el.remove();
+    if (el.tagName !== 'defs' && el.id !== 'canvas-ghost-line' && el.id !== 'canvas-zone-indicator') el.remove();
   });
   p.tasks.forEach(task => {
     const toX = task.canvasX || 0;
@@ -2100,26 +2124,47 @@ function drawCanvasArrows(svg, p, byId) {
       const fromX = (dep.canvasX || 0) + CARD_W;
       const fromY = (dep.canvasY || 0) + CARD_H / 2;
       svg.appendChild(canvasBezier(fromX, fromY, toX, toY));
-      // Type label — clickable to cycle FS→FF→SS
+
+      // Pill: [FS ×] — type cycles on click, × deletes
       const type = depObj.type || 'FS';
       const mx = fromX + (toX - fromX) * 0.45;
-      const my = fromY + (toY - fromY) * 0.45 - 6;
-      const pill = makeSVGEl('g', { style: 'cursor:pointer' });
-      pill.appendChild(makeSVGEl('rect', { x: mx - 10, y: my - 8, width: 20, height: 13, rx: 3, fill: '#fff', stroke: '#cbd5e1', 'stroke-width': 1 }));
-      const lbl = makeSVGEl('text', { x: mx, y: my + 2, 'text-anchor': 'middle', 'font-size': 8, fill: '#64748b', 'font-weight': 700 });
+      const my = fromY + (toY - fromY) * 0.45;
+      const PW = 34, PH = 14;
+
+      const pill = makeSVGEl('g');
+      // Background
+      pill.appendChild(makeSVGEl('rect', { x: mx - PW / 2, y: my - PH / 2, width: PW, height: PH, rx: 3, fill: '#fff', stroke: '#cbd5e1', 'stroke-width': 1 }));
+      // Divider
+      pill.appendChild(makeSVGEl('line', { x1: mx + 4, y1: my - PH / 2 + 2, x2: mx + 4, y2: my + PH / 2 - 2, stroke: '#e2e8f0', 'stroke-width': 1 }));
+      // Type text (left zone)
+      const lbl = makeSVGEl('text', { x: mx - 5, y: my + 3, 'text-anchor': 'middle', 'font-size': 8, fill: '#64748b', 'font-weight': 700, style: 'cursor:pointer' });
       lbl.textContent = type;
       pill.appendChild(lbl);
-      pill.addEventListener('click', (e) => {
+      // × delete (right zone)
+      const delEl = makeSVGEl('text', { x: mx + 11, y: my + 3, 'text-anchor': 'middle', 'font-size': 9, fill: '#94a3b8', 'font-weight': 700, style: 'cursor:pointer' });
+      delEl.textContent = '×';
+      pill.appendChild(delEl);
+      // Invisible hit zones
+      const typeZone = makeSVGEl('rect', { x: mx - PW / 2, y: my - PH / 2, width: PW - 12, height: PH, fill: 'transparent', style: 'cursor:pointer' });
+      const delZone  = makeSVGEl('rect', { x: mx + 4,      y: my - PH / 2, width: 12,        height: PH, fill: 'transparent', style: 'cursor:pointer' });
+      pill.appendChild(typeZone);
+      pill.appendChild(delZone);
+
+      typeZone.addEventListener('click', (e) => {
         e.stopPropagation();
         const deps = normalizeDeps(task.dependencies);
         const d = deps.find(d => d.id === depObj.id);
-        if (d) {
-          d.type = DEP_TYPES[(DEP_TYPES.indexOf(d.type) + 1) % DEP_TYPES.length];
-          task.dependencies = deps;
-          markDirty();
-          drawCanvasArrows(svg, p, byId);
-        }
+        if (d) { d.type = DEP_TYPES[(DEP_TYPES.indexOf(d.type) + 1) % DEP_TYPES.length]; task.dependencies = deps; markDirty(); drawCanvasArrows(svg, p, byId); }
       });
+      delZone.addEventListener('click', (e) => {
+        e.stopPropagation();
+        task.dependencies = normalizeDeps(task.dependencies).filter(d => d.id !== depObj.id);
+        markDirty();
+        drawCanvasArrows(svg, p, byId);
+      });
+      delEl.addEventListener('mouseenter', () => delEl.setAttribute('fill', '#ef4444'));
+      delEl.addEventListener('mouseleave', () => delEl.setAttribute('fill', '#94a3b8'));
+
       svg.appendChild(pill);
     });
   });
@@ -2186,6 +2231,39 @@ function setupCanvasPanZoom(view, panArea) {
 function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
   const ghostLine = document.getElementById('canvas-ghost-line');
 
+  // Zone overlay: coloured band showing which dep type will be created
+  const zoneIndicator = makeSVGEl('g', { id: 'canvas-zone-indicator', 'pointer-events': 'none' });
+  const zoneRect = makeSVGEl('rect', { rx: 6, ry: 6, opacity: 0.28 });
+  const zoneLabel = makeSVGEl('text', { 'text-anchor': 'middle', 'font-size': 10, 'font-weight': 800, fill: '#fff', 'pointer-events': 'none' });
+  zoneIndicator.appendChild(zoneRect);
+  zoneIndicator.appendChild(zoneLabel);
+  zoneIndicator.setAttribute('opacity', 0);
+  arrowsSvg.appendChild(zoneIndicator);
+
+  const DEP_ZONE_COLORS = { FS: '#5865f5', SS: '#0891b2', FF: '#d97706' };
+  let currentDepType = 'FS';
+
+  function getZone(cursorX, cardX) {
+    const rel = (cursorX - cardX) / CARD_W;
+    if (rel < 0.33) return 'SS';
+    if (rel > 0.67) return 'FF';
+    return 'FS';
+  }
+
+  function showZone(t, type) {
+    const zW = CARD_W / 3;
+    const zoneIdx = { SS: 0, FS: 1, FF: 2 }[type];
+    const zx = (t.canvasX || 0) + zoneIdx * zW;
+    const zy = t.canvasY || 0;
+    zoneRect.setAttribute('x', zx); zoneRect.setAttribute('y', zy);
+    zoneRect.setAttribute('width', zW); zoneRect.setAttribute('height', CARD_H);
+    zoneRect.setAttribute('fill', DEP_ZONE_COLORS[type]);
+    zoneLabel.setAttribute('x', zx + zW / 2);
+    zoneLabel.setAttribute('y', zy + CARD_H / 2 + 4);
+    zoneLabel.textContent = type;
+    zoneIndicator.setAttribute('opacity', 1);
+  }
+
   panArea.addEventListener('mousedown', (e) => {
     const handle = e.target.closest('.canvas-card-handle');
     if (!handle) return;
@@ -2199,6 +2277,7 @@ function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
     const fromX = (task.canvasX || 0) + CARD_W;
     const fromY = (task.canvasY || 0) + CARD_H / 2;
     const viewRect = view.getBoundingClientRect();
+    currentDepType = 'FS';
 
     document.querySelectorAll(`.canvas-card:not([data-task-id="${taskId}"])`).forEach(c => {
       c.classList.add('dep-target');
@@ -2215,6 +2294,7 @@ function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
       ghostLine.setAttribute('x2', x);     ghostLine.setAttribute('y2', y);
       ghostLine.setAttribute('opacity', 1);
 
+      let hoveredTask = null;
       document.querySelectorAll('.canvas-card.dep-target').forEach(c => {
         const t = byId[c.dataset.taskId];
         if (!t) return;
@@ -2222,6 +2302,7 @@ function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
                     && y >= (t.canvasY || 0) && y <= (t.canvasY || 0) + CARD_H;
         c.classList.toggle('dep-hover', inside);
         if (inside) {
+          hoveredTask = t;
           const bad = wouldCreateCycle(p, taskId, c.dataset.taskId);
           c.classList.toggle('dep-bad', bad);
           c.classList.toggle('dep-good', !bad);
@@ -2229,10 +2310,19 @@ function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
           c.classList.remove('dep-bad', 'dep-good');
         }
       });
+
+      if (hoveredTask && !wouldCreateCycle(p, taskId, document.querySelector('.canvas-card.dep-hover')?.dataset.taskId)) {
+        currentDepType = getZone(x, hoveredTask.canvasX || 0);
+        showZone(hoveredTask, currentDepType);
+      } else {
+        zoneIndicator.setAttribute('opacity', 0);
+        currentDepType = 'FS';
+      }
     };
 
     const onUp = () => {
       ghostLine.setAttribute('opacity', 0);
+      zoneIndicator.setAttribute('opacity', 0);
 
       const hovered = document.querySelector('.canvas-card.dep-hover');
       if (hovered) {
@@ -2242,7 +2332,7 @@ function setupCanvasDepConnect(view, panArea, arrowsSvg, p, byId) {
         } else {
           const t = byId[targetId];
           if (t && !normalizeDeps(t.dependencies).some(d => d.id === taskId)) {
-            t.dependencies = [...normalizeDeps(t.dependencies), { id: taskId, type: 'FS' }];
+            t.dependencies = [...normalizeDeps(t.dependencies), { id: taskId, type: currentDepType }];
             markDirty();
             drawCanvasArrows(arrowsSvg, p, byId);
           }
@@ -2315,7 +2405,7 @@ function openDepPopover(taskId, anchorEl) {
   inner.appendChild(title);
 
   const delivMap = Object.fromEntries((p.deliverables || []).map(d => [d.id, d]));
-  const groupMap = Object.fromEntries((p.taskGroups || []).map(g => [g.id, g]));
+  const activityMap = Object.fromEntries((p.activities || []).map(a => [a.id, a]));
 
   const others = p.tasks.filter(t => t.id !== taskId);
   if (!others.length) {
@@ -2363,10 +2453,10 @@ function openDepPopover(taskId, anchorEl) {
 
       // Context label: deliverable / group
       const deliv = t.deliverableId ? delivMap[t.deliverableId] : null;
-      const group = t.groupId ? groupMap[t.groupId] : null;
-      const ctxText = group && deliv ? deliv.name + ' / ' + group.name
+      const act = t.activityId ? activityMap[t.activityId] : null;
+      const ctxText = act && deliv ? deliv.name + ' / ' + act.name
                     : deliv ? deliv.name
-                    : group ? group.name : '';
+                    : act ? act.name : '';
       if (ctxText) {
         const ctx = document.createElement('span');
         ctx.className = 'dep-popover-context';
@@ -2555,6 +2645,117 @@ function showToast(msg) {
   setTimeout(() => t.remove(), 3000);
 }
 
+// ── Templates Modal ───────────────────────────────────────────
+function openTemplatesModal() {
+  document.getElementById('templates-overlay').classList.remove('hidden');
+  renderTemplatesModal();
+}
+
+function closeTemplatesModal() {
+  document.getElementById('templates-overlay').classList.add('hidden');
+}
+
+function addTemplate() {
+  state.templates.push({ id: uid(), name: 'New Template', tasks: [] });
+  markDirty();
+  renderTemplatesModal();
+}
+
+function renderTemplatesModal() {
+  const list = document.getElementById('templates-list');
+  list.innerHTML = '';
+
+  if (!state.templates.length) {
+    const empty = document.createElement('p');
+    empty.style.cssText = 'text-align:center;color:#aaa;font-size:13px;padding:20px';
+    empty.textContent = 'No templates yet. Add one below.';
+    list.appendChild(empty);
+    return;
+  }
+
+  state.templates.forEach(tmpl => {
+    const section = document.createElement('div');
+    section.className = 'tmpl-section';
+
+    // Template header row
+    const header = document.createElement('div');
+    header.className = 'tmpl-header';
+
+    const nameInp = document.createElement('input');
+    nameInp.type = 'text'; nameInp.className = 'tmpl-name-input'; nameInp.value = tmpl.name;
+    nameInp.addEventListener('change', () => { tmpl.name = nameInp.value; markDirty(); });
+    nameInp.addEventListener('keydown', e => { if (e.key === 'Enter') nameInp.blur(); });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'team-del-btn'; delBtn.textContent = '×';
+    delBtn.title = 'Delete template';
+    delBtn.addEventListener('click', () => showConfirm(
+      `Delete template "${tmpl.name}"?`,
+      () => { state.templates = state.templates.filter(t => t.id !== tmpl.id); markDirty(); renderTemplatesModal(); }
+    ));
+
+    header.appendChild(nameInp); header.appendChild(delBtn);
+    section.appendChild(header);
+
+    // Task rows
+    const tasksList = document.createElement('div');
+    tasksList.className = 'tmpl-tasks';
+
+    (tmpl.tasks || []).forEach((task, i) => {
+      const row = document.createElement('div');
+      row.className = 'tmpl-task-row';
+
+      const taskName = document.createElement('input');
+      taskName.type = 'text'; taskName.className = 'tmpl-task-name';
+      taskName.placeholder = 'Task name'; taskName.value = task.name || '';
+      taskName.addEventListener('change', () => { task.name = taskName.value; markDirty(); });
+
+      const typeSel = document.createElement('select');
+      typeSel.className = 'tmpl-task-type';
+      const emptyOpt = document.createElement('option');
+      emptyOpt.value = ''; emptyOpt.textContent = '—';
+      typeSel.appendChild(emptyOpt);
+      ACTIVITY_TYPES.forEach(at => {
+        const opt = document.createElement('option');
+        opt.value = at.id; opt.textContent = at.label;
+        if (task.type === at.id) opt.selected = true;
+        typeSel.appendChild(opt);
+      });
+      typeSel.addEventListener('change', () => { task.type = typeSel.value || null; markDirty(); });
+
+      const durInp = document.createElement('input');
+      durInp.type = 'number'; durInp.min = 1; durInp.className = 'tmpl-task-dur';
+      durInp.value = task.duration || 1;
+      durInp.addEventListener('change', () => { task.duration = Math.max(1, parseInt(durInp.value) || 1); markDirty(); });
+
+      const durLabel = document.createElement('span');
+      durLabel.className = 'tmpl-task-dur-label'; durLabel.textContent = 'd';
+
+      const taskDel = document.createElement('button');
+      taskDel.className = 'team-del-btn'; taskDel.textContent = '×';
+      taskDel.title = 'Remove task from template';
+      taskDel.addEventListener('click', () => { tmpl.tasks.splice(i, 1); markDirty(); renderTemplatesModal(); });
+
+      row.appendChild(taskName); row.appendChild(typeSel);
+      row.appendChild(durInp); row.appendChild(durLabel); row.appendChild(taskDel);
+      tasksList.appendChild(row);
+    });
+
+    const addTaskBtn = document.createElement('button');
+    addTaskBtn.className = 'tmpl-add-task-btn'; addTaskBtn.textContent = '+ Add task';
+    addTaskBtn.addEventListener('click', () => {
+      if (!tmpl.tasks) tmpl.tasks = [];
+      tmpl.tasks.push({ name: '', type: null, duration: 1 });
+      markDirty();
+      renderTemplatesModal();
+    });
+    tasksList.appendChild(addTaskBtn);
+
+    section.appendChild(tasksList);
+    list.appendChild(section);
+  });
+}
+
 // ── Event Wiring ──────────────────────────────────────────────
 function wireEvents() {
   document.getElementById('new-project-btn').addEventListener('click', newProject);
@@ -2620,6 +2821,14 @@ function wireEvents() {
   });
   document.getElementById('add-deliverable-btn').addEventListener('click', addDeliverable);
 
+  // Templates button
+  document.getElementById('templates-btn').addEventListener('click', openTemplatesModal);
+  document.getElementById('templates-modal-close').addEventListener('click', closeTemplatesModal);
+  document.getElementById('templates-overlay').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('templates-overlay')) closeTemplatesModal();
+  });
+  document.getElementById('add-template-btn').addEventListener('click', addTemplate);
+
   // Close popovers on outside click
   document.addEventListener('click', (e) => {
     const teamPop = document.getElementById('team-popover');
@@ -2660,7 +2869,7 @@ function wireEvents() {
 
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveData(); }
-    if (e.key === 'Escape') { closeTeamPopover(); closeTeamsModal(); closeDepPopover(); closeDeliverablesModal(); closeStreamsModal(); }
+    if (e.key === 'Escape') { closeTeamPopover(); closeTeamsModal(); closeDepPopover(); closeDeliverablesModal(); closeStreamsModal(); closeTemplatesModal(); }
   });
 
   document.getElementById('canvas-auto-layout-btn').addEventListener('click', () => {

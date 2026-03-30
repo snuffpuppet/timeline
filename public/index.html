@@ -53,6 +53,7 @@
           <button id="streams-btn">Streams...</button>
           <button id="teams-btn">Teams...</button>
           <button id="deliverables-btn">Deliverables...</button>
+          <button id="templates-btn">Templates...</button>
           <span id="save-indicator">Saved</span>
           <button id="save-btn">Save</button>
           <button id="print-btn">Print PDF</button>
@@ -66,7 +67,7 @@
             <thead>
               <tr>
                 <th class="col-num">#</th>
-                <th class="col-name">Activity</th>
+                <th class="col-name">Task</th>
                 <th class="col-type">Type</th>
                 <th class="col-dur">Duration<br><small>(days)</small></th>
                 <th class="col-deps">Dependencies<br><small>(row #s)</small></th>
@@ -102,7 +103,7 @@
         <div id="canvas-inner-toolbar">
           <button id="canvas-auto-layout-btn">Auto-layout</button>
           <button id="canvas-fit-btn">Fit all</button>
-          <span class="canvas-hint">Drag card to move &nbsp;·&nbsp; Drag <strong>●</strong> to link &nbsp;·&nbsp; Scroll to zoom &nbsp;·&nbsp; Drag empty space to pan</span>
+          <span class="canvas-hint">Drag card to move &nbsp;·&nbsp; Drag <strong>●</strong> to link — drop on <strong>left</strong>=SS · <strong>centre</strong>=FS · <strong>right</strong>=FF &nbsp;·&nbsp; Click <strong>[FS]</strong> to cycle type · <strong>×</strong> to delete &nbsp;·&nbsp; Scroll to zoom &nbsp;·&nbsp; Drag empty space to pan</span>
         </div>
       </div>
 
@@ -169,6 +170,19 @@
   <!-- Dependency picker popover -->
   <div id="dep-popover" class="hidden">
     <div id="dep-popover-inner"></div>
+  </div>
+
+  <!-- Templates management modal -->
+  <div id="templates-overlay" class="modal-overlay hidden">
+    <div id="templates-modal-box">
+      <div id="templates-modal-header">
+        <h3>Activity Templates</h3>
+        <button id="templates-modal-close" class="icon-btn">×</button>
+      </div>
+      <p class="teams-hint">Define reusable task sets. Choose a template when adding an activity to pre-populate its tasks.</p>
+      <div id="templates-list"></div>
+      <button id="add-template-btn">+ Add Template</button>
+    </div>
   </div>
 
   <!-- Delete project confirm modal -->

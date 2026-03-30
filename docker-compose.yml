@@ -4,6 +4,8 @@ services:
     ports:
       - "8080:3000"
     volumes:
+      - ./server.py:/app/server.py:ro
+      - ./public:/app/public:ro
       - ./data:/app/data
     user: "${UID:-1000}:${GID:-1000}"
     restart: unless-stopped
