@@ -2755,19 +2755,6 @@ function renderTemplatesModal() {
       taskName.placeholder = 'Task name'; taskName.value = task.name || '';
       taskName.addEventListener('change', () => { task.name = taskName.value; markDirty(); });
 
-      const typeSel = document.createElement('select');
-      typeSel.className = 'tmpl-task-type';
-      const emptyOpt = document.createElement('option');
-      emptyOpt.value = ''; emptyOpt.textContent = '—';
-      typeSel.appendChild(emptyOpt);
-      ACTIVITY_TYPES.forEach(at => {
-        const opt = document.createElement('option');
-        opt.value = at.id; opt.textContent = at.label;
-        if (task.type === at.id) opt.selected = true;
-        typeSel.appendChild(opt);
-      });
-      typeSel.addEventListener('change', () => { task.type = typeSel.value || null; markDirty(); });
-
       const durInp = document.createElement('input');
       durInp.type = 'number'; durInp.min = 1; durInp.className = 'tmpl-task-dur';
       durInp.value = task.duration || 1;
@@ -2781,7 +2768,7 @@ function renderTemplatesModal() {
       taskDel.title = 'Remove task from template';
       taskDel.addEventListener('click', () => { tmpl.tasks.splice(i, 1); markDirty(); renderTemplatesModal(); });
 
-      row.appendChild(taskName); row.appendChild(typeSel);
+      row.appendChild(taskName);
       row.appendChild(durInp); row.appendChild(durLabel); row.appendChild(taskDel);
       tasksList.appendChild(row);
     });

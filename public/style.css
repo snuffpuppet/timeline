@@ -2007,22 +2007,6 @@ button.danger:hover { background: #dc2626; transform: translateY(-1px); }
 }
 .tmpl-task-name:focus { border-color: var(--accent); background: #fff; }
 
-.tmpl-task-type {
-  width: 108px;
-  height: 28px;
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  font-family: 'DM Sans', sans-serif;
-  font-size: 12px;
-  color: var(--text-2);
-  background: var(--bg);
-  outline: none;
-  cursor: pointer;
-  transition: border-color .15s;
-}
-.tmpl-task-type:focus { border-color: var(--accent); }
-
 .tmpl-task-dur {
   width: 48px;
   height: 28px;
