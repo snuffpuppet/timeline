@@ -2037,7 +2037,11 @@ function renderGantt() {
 
   const dayW = { day: 36, week: 18, month: 6 }[state.zoom] || 18;
   const totalW = maxDay * dayW;
-  const totalH = GANTT_HEADER_H + rows.length * ROW_H;
+  // Extra SVG padding = approximate legend footer height so the chart can scroll far
+  // enough for labelsBody sync to expose the last rows (footer lives outside labelsBody).
+  const teams = p.teams || [];
+  const footerPad = teams.length ? 20 + 24 + teams.length * 26 : 0;
+  const totalH = GANTT_HEADER_H + rows.length * ROW_H + footerPad;
 
   svg.style.width = totalW + 'px';
   svg.style.height = totalH + 'px';
@@ -2196,8 +2200,10 @@ function renderGantt() {
           lbl.textContent = truncate(deliv.name + ' (' + scheduled.length + ')', Math.floor(w / 7));
           barsG.appendChild(lbl);
         }
-        // Stats on bar (right-aligned)
-        if (w > 110) {
+        // Stats on bar (right-aligned): only when expanded (no name label competing for space),
+        // or when collapsed with a very wide bar (room for both)
+        const showStats = !collapsed ? w > 100 : w > 280;
+        if (showStats) {
           const statsStr = delivEffort + 'pd' +
             (delivDur != null ? ' · ' + delivDur + 'd' : '') +
             ' · ' + delivFte + 'FTE';
@@ -2267,8 +2273,9 @@ function renderGantt() {
           lbl.textContent = truncate(activity.name + ' (' + scheduled.length + ')', Math.floor(w / 7));
           barsG.appendChild(lbl);
         }
-        // Stats on bar (right-aligned)
-        if (w > 110) {
+        // Stats on bar (right-aligned): only when expanded, or very wide when collapsed
+        const showActStats = !collapsed ? w > 100 : w > 280;
+        if (showActStats) {
           const statsStr = actEffort + 'pd' +
             (actDur != null ? ' · ' + actDur + 'd' : '') +
             ' · ' + actFte + 'FTE';
@@ -2402,7 +2409,6 @@ function renderGantt() {
   svg.appendChild(arrowsG);
 
   // Team legend footer in labels panel
-  const teams = p.teams || [];
   if (teams.length) {
     const labelPanel = document.getElementById('gantt-labels-panel');
     const newFooter = document.createElement('div');
