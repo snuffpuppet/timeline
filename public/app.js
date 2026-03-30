@@ -142,20 +142,30 @@ function computeSchedule(project) {
 
   const earlyStart = {};
   const earlyEnd = {};
+  const fixedViolations = new Set(); // task IDs where fixed start precedes dep completion
+
   for (const id of order) {
     const t = byId[id];
     const dur = taskCalDays(t, project);
     const normDeps = normalizeDeps(t.dependencies).filter(d => byId[d.id]);
-    let start = 0;
+    let depsStart = 0;
     if (normDeps.length) {
-      start = Math.max(0, Math.max(...normDeps.map(dep => {
+      depsStart = Math.max(0, Math.max(...normDeps.map(dep => {
         if (dep.type === 'FF') return (earlyEnd[dep.id] || 0) - dur;
         if (dep.type === 'SS') return earlyStart[dep.id] || 0;
         return earlyEnd[dep.id] || 0; // FS (default)
       })));
     }
-    earlyStart[id] = start;
-    earlyEnd[id] = start + dur;
+    if (t.fixedStart != null) {
+      const fixedOffset = project.startDate
+        ? Math.round((new Date(t.fixedStart + 'T00:00:00') - new Date(project.startDate + 'T00:00:00')) / 86400000)
+        : 0;
+      earlyStart[id] = fixedOffset;
+      if (fixedOffset < depsStart) fixedViolations.add(id);
+    } else {
+      earlyStart[id] = depsStart;
+    }
+    earlyEnd[id] = earlyStart[id] + dur;
   }
 
   const projectDuration = Math.max(...Object.values(earlyEnd));
@@ -181,6 +191,8 @@ function computeSchedule(project) {
       startDay: earlyStart[id],
       endDay: earlyEnd[id] - 1,
       isCritical: (lateStart[id] - earlyStart[id]) === 0,
+      isFixed: byId[id].fixedStart != null,
+      isViolating: fixedViolations.has(id),
     };
   }
   return result;
@@ -196,6 +208,14 @@ function upgradeData() {
     });
     (p.tasks || []).forEach(t => {
       if (t.effort == null) { t.effort = t.duration || 1; changed = true; }
+      // Migrate old offset-based fixed start to absolute date
+      if (t.fixedStartOffset != null && t.fixedStart == null) {
+        if (p.startDate) {
+          t.fixedStart = addDays(new Date(p.startDate), t.fixedStartOffset).toISOString().slice(0, 10);
+        }
+        delete t.fixedStartOffset;
+        changed = true;
+      }
     });
   });
   if (changed) markDirty();
@@ -1048,14 +1068,14 @@ function renderTable() {
     tr.appendChild(makeEditCell(task.id, 'assignee', task.assignee || '', 'text'));
     tr.appendChild(makeEditCell(task.id, 'notes', task.notes || '', 'text'));
 
-    const startTd = document.createElement('td');
-    startTd.className = 'date-cell'; startTd.dataset.for = task.id; startTd.dataset.which = 'start';
-    startTd.textContent = taskStart ? fmt(taskStart) : '—';
+    const startTd = makeStartDateCell(task, s, taskStart);
     tr.appendChild(startTd);
 
     const endTd = document.createElement('td');
     endTd.className = 'date-cell'; endTd.dataset.for = task.id; endTd.dataset.which = 'end';
-    endTd.textContent = taskEnd ? fmt(taskEnd) : '—';
+    const endText = document.createElement('span'); endText.className = 'date-text';
+    endText.textContent = taskEnd ? fmt(taskEnd) : '—';
+    endTd.appendChild(endText);
     tr.appendChild(endTd);
 
     const delTd = document.createElement('td');
@@ -1082,14 +1102,23 @@ function renderTable() {
     if (indented) hInner.style.paddingLeft = '28px';
     const dot = document.createElement('span'); dot.className = 'deliv-dot'; dot.style.background = deliv.color;
     const dName = document.createElement('span'); dName.className = 'deliv-name'; dName.textContent = deliv.name;
-    const delivTotalEffort = p.tasks.filter(t => t.deliverableId === deliv.id)
-      .reduce((sum, t) => sum + (t.effort ?? t.duration ?? 1), 0);
-    const dEffort = document.createElement('span'); dEffort.className = 'deliv-effort-label';
-    dEffort.textContent = delivTotalEffort + ' pd';
-    dEffort.title = delivTotalEffort + ' person-days total effort';
+    const delivTaskList = p.tasks.filter(t => t.deliverableId === deliv.id);
+    const delivTotalEffort = delivTaskList.reduce((sum, t) => sum + (t.effort ?? t.duration ?? 1), 0);
+    const delivTotalFte   = dActivities.reduce((sum, a) => sum + (a.fte || 1), 0);
+    const delivScheduled  = schedule ? delivTaskList.map(t => schedule[t.id]).filter(Boolean) : [];
+    const delivDuration   = delivScheduled.length
+      ? Math.max(...delivScheduled.map(s => s.endDay)) - Math.min(...delivScheduled.map(s => s.startDay)) + 1
+      : null;
+
+    const dStats = document.createElement('span'); dStats.className = 'row-stats deliv-stats';
+    dStats.innerHTML =
+      `<span title="Total effort">${delivTotalEffort}pd</span>` +
+      (delivDuration != null ? `<span class="stats-sep">·</span><span title="Calendar duration">${delivDuration}d</span>` : '') +
+      (dActivities.length ? `<span class="stats-sep">·</span><span title="Total FTE across activities">${delivTotalFte}FTE</span>` : '');
+
     const addBtn = document.createElement('button'); addBtn.className = 'add-task-btn'; addBtn.textContent = '+ Add Activity';
     addBtn.addEventListener('click', () => showAddActivityInput(deliv.id));
-    hInner.appendChild(dot); hInner.appendChild(dName); hInner.appendChild(dEffort); hInner.appendChild(addBtn);
+    hInner.appendChild(dot); hInner.appendChild(dName); hInner.appendChild(dStats); hInner.appendChild(addBtn);
     hTd.appendChild(hInner); hTr.appendChild(hTd); tbody.appendChild(hTr);
 
     // Activities
@@ -1104,12 +1133,20 @@ function renderTable() {
       const aInner = document.createElement('div'); aInner.className = 'activity-row-inner';
       const aName = document.createElement('span'); aName.className = 'activity-row-name'; aName.textContent = activity.name;
 
-      const totalEffort = aTasks.reduce((sum, t) => sum + (t.effort ?? t.duration ?? 1), 0);
-      const aEffort = document.createElement('span'); aEffort.className = 'activity-effort-label';
-      aEffort.textContent = totalEffort + ' person-days';
+      const totalEffort    = aTasks.reduce((sum, t) => sum + (t.effort ?? t.duration ?? 1), 0);
+      const actScheduled   = schedule ? aTasks.map(t => schedule[t.id]).filter(Boolean) : [];
+      const actDuration    = actScheduled.length
+        ? Math.max(...actScheduled.map(s => s.endDay)) - Math.min(...actScheduled.map(s => s.startDay)) + 1
+        : null;
+      const aEffort = document.createElement('span'); aEffort.className = 'row-stats activity-stats';
+      aEffort.innerHTML =
+        `<span title="Total effort">${totalEffort}pd</span>` +
+        (actDuration != null ? `<span class="stats-sep">·</span><span title="Calendar duration">${actDuration}d</span>` : '') +
+        `<span class="stats-sep">·</span><span title="FTE">${activity.fte || 1}FTE</span>`;
 
       const fteLbl = document.createElement('label'); fteLbl.className = 'activity-fte-label';
-      fteLbl.textContent = 'FTE:';
+      fteLbl.title = 'FTE assigned to this activity';
+      const ftePre = document.createElement('span'); ftePre.textContent = 'FTE:';
       const fteInp = document.createElement('input');
       fteInp.type = 'number'; fteInp.min = '0.5'; fteInp.step = '0.5'; fteInp.className = 'activity-fte-input';
       fteInp.value = activity.fte || 1;
@@ -1117,7 +1154,7 @@ function renderTable() {
         activity.fte = Math.max(0.5, parseFloat(fteInp.value) || 1);
         markDirty(); renderAll();
       });
-      fteLbl.appendChild(fteInp);
+      fteLbl.appendChild(ftePre); fteLbl.appendChild(fteInp);
 
       // Team badge (single primary team for this activity)
       const actTeam = activity.teamId ? (p.teams || []).find(t => t.id === activity.teamId) : null;
@@ -1426,6 +1463,104 @@ function makeEditCell(taskId, field, value, type, swatchColor) {
   return td;
 }
 
+function makeStartDateCell(task, schedEntry, displayDate) {
+  const td = document.createElement('td');
+  td.dataset.for = task.id;
+  td.dataset.which = 'start';
+
+  const isFixed    = task.fixedStart != null;
+  const isViolating = schedEntry?.isViolating || false;
+  td.className = 'date-cell start-date-cell'
+    + (isFixed ? (isViolating ? ' fixed-start-violating' : ' fixed-start') : '');
+  td.title = isFixed
+    ? (isViolating ? 'Fixed start — overrides unfinished dependency' : 'Fixed start — click to edit')
+    : 'Click to set fixed start date';
+
+  if (isFixed) {
+    const pin = document.createElement('span');
+    pin.className = 'fixed-start-icon';
+    pin.title = isViolating ? '⚠ Starts before dependency finishes' : 'Fixed start';
+    td.appendChild(pin);
+  }
+  const dateText = document.createElement('span');
+  dateText.className = 'date-text';
+  dateText.textContent = displayDate ? fmt(displayDate) : '—';
+  td.appendChild(dateText);
+
+  td.addEventListener('click', e => { e.stopPropagation(); openStartDatePopover(task.id, td); });
+  return td;
+}
+
+// ── Fixed Start Date Popover ──────────────────────────────────
+function openStartDatePopover(taskId, anchorEl) {
+  closeStartDatePopover();
+  const p = currentProject();
+  const task = p?.tasks.find(t => t.id === taskId);
+  if (!task) return;
+
+  const pop = document.createElement('div');
+  pop.id = 'start-date-popover';
+
+  const label = document.createElement('div');
+  label.className = 'sdp-label';
+  label.textContent = 'Fixed start date';
+  pop.appendChild(label);
+
+  const inp = document.createElement('input');
+  inp.type = 'date';
+  inp.className = 'sdp-input';
+
+  if (task.fixedStart != null) inp.value = task.fixedStart;
+
+  inp.addEventListener('change', () => {
+    if (!inp.value) return;
+    task.fixedStart = inp.value;
+    markDirty(); renderAll();
+    closeStartDatePopover();
+  });
+  pop.appendChild(inp);
+
+  if (task.fixedStart != null) {
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'sdp-clear';
+    clearBtn.textContent = 'Remove override';
+    clearBtn.addEventListener('click', () => {
+      task.fixedStart = null;
+      markDirty(); renderAll();
+      closeStartDatePopover();
+    });
+    pop.appendChild(clearBtn);
+  }
+
+  document.body.appendChild(pop);
+
+  const rect = anchorEl.getBoundingClientRect();
+  const pw = pop.offsetWidth || 190;
+  const ph = pop.offsetHeight || 110;
+  let left = rect.left;
+  let top = rect.bottom + 4;
+  if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
+  if (top + ph > window.innerHeight - 8) top = rect.top - ph - 4;
+  pop.style.left = left + 'px';
+  pop.style.top  = top + 'px';
+
+  // Open native picker after positioning
+  setTimeout(() => { try { inp.showPicker(); } catch (_) { inp.focus(); } }, 60);
+
+  document.addEventListener('mousedown', _sdpOutsideClick);
+}
+
+function _sdpOutsideClick(e) {
+  const pop = document.getElementById('start-date-popover');
+  if (pop && !pop.contains(e.target)) closeStartDatePopover();
+}
+
+function closeStartDatePopover() {
+  const pop = document.getElementById('start-date-popover');
+  if (pop) pop.remove();
+  document.removeEventListener('mousedown', _sdpOutsideClick);
+}
+
 function makeNumCell(taskId, field, value) {
   const td = document.createElement('td');
   const inp = document.createElement('input');
@@ -1574,7 +1709,20 @@ function renderDates() {
     const s = schedule[el.dataset.for];
     if (!s) return;
     const d = el.dataset.which === 'start' ? addDays(startDate, s.startDay) : addDays(startDate, s.endDay);
-    el.textContent = fmt(d);
+    const textEl = el.querySelector('.date-text') || el;
+    textEl.textContent = fmt(d);
+    if (el.dataset.which === 'start') {
+      el.classList.toggle('fixed-start', !!s.isFixed && !s.isViolating);
+      el.classList.toggle('fixed-start-violating', !!s.isViolating);
+      const pin = el.querySelector('.fixed-start-icon');
+      if (s.isFixed && !pin) {
+        const newPin = document.createElement('span');
+        newPin.className = 'fixed-start-icon';
+        el.insertBefore(newPin, el.firstChild);
+      } else if (!s.isFixed && pin) {
+        pin.remove();
+      }
+    }
   });
 
   document.querySelectorAll('#task-tbody tr[data-id]').forEach(tr => {
@@ -3438,7 +3586,7 @@ function wireEvents() {
 
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveData(); }
-    if (e.key === 'Escape') { closeTeamPopover(); closeActivityTeamPopover(); closeTeamsModal(); closeDepPopover(); closeDeliverablesModal(); closeStreamsModal(); closeTemplatesModal(); }
+    if (e.key === 'Escape') { closeTeamPopover(); closeActivityTeamPopover(); closeStartDatePopover(); closeTeamsModal(); closeDepPopover(); closeDeliverablesModal(); closeStreamsModal(); closeTemplatesModal(); }
   });
 
   document.getElementById('canvas-auto-layout-btn').addEventListener('click', () => {
