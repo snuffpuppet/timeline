@@ -2596,6 +2596,7 @@ function renderHistogram(p, schedule, dayW, maxDay) {
 
     buckets.forEach((val, wi) => {
       if (val < 0.01) return;
+      const fte = val / 5; // person-days ÷ 5 working days = FTE
       const barH = Math.max(2, Math.round((val / globalMax) * BAR_MAX_H));
       const bx = wi * 7 * dayW + 1;
       const bw = Math.max(1, 7 * dayW - 2);
@@ -2611,14 +2612,19 @@ function renderHistogram(p, schedule, dayW, maxDay) {
           x: bx + bw / 2, y: by + barH - 4,
           'text-anchor': 'middle', fill: '#fff', 'font-size': 9, 'font-weight': 600,
         });
-        lbl.textContent = Math.round(val);
+        lbl.textContent = fte.toFixed(1);
         svg.appendChild(lbl);
       }
 
-      // Tooltip
-      const title = makeSVGEl('title');
-      title.textContent = row.name + ': ' + val.toFixed(1) + ' person-days (week ' + (wi + 1) + ')';
-      rect.appendChild(title);
+      // Floating tooltip (same as Gantt bars)
+      const ttLines = [
+        row.name,
+        'FTE: ' + fte.toFixed(2),
+        val.toFixed(1) + ' person-days · week ' + (wi + 1),
+      ];
+      rect.addEventListener('mouseenter', e => showGanttTooltip(e, ttLines));
+      rect.addEventListener('mousemove', e => moveGanttTooltip(e));
+      rect.addEventListener('mouseleave', hideGanttTooltip);
     });
   });
 
